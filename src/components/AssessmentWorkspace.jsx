@@ -1,235 +1,180 @@
-
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { saveAssessmentResult } from "../utils/progressStorage";
+import { challenges } from "../data/challenges";
 import {
   ArrowLeft, Play, Lightbulb, FileCode2, CheckCircle2,
-  XCircle, RotateCcw
+  XCircle, RotateCcw,
 } from "lucide-react";
 
-const initialFiles = {
-  "UserController.java": `@RestController
-@RequestMapping("/api/users")
-public class UserController {
-
-    private final UserService service;
-
-    public UserController(UserService service) {
-        this.service = service;
-    }
-
-    @GetMapping("/{id}")
-    public ResponseEntity&lt;User&gt; getUser(@PathVariable int id) {
-        User user = service.findById(id);
-        return ResponseEntity.ok(user);
-    }
-}`,
-  "UserService.java": `public class UserService {
-
-    public User findById(int id) {
-        if (id &lt; 0) {
-            throw new IllegalArgumentException("Invalid ID");
-        }
-
-        // TODO: Handle missing users correctly
-        return null;
-    }
-}`,
-  "UserServiceTest.java": `public class UserServiceTest {
-
-    // Expected behavior:
-    // Invalid IDs should be rejected.
-    // Missing users should return HTTP 404.
-    // Existing users should return HTTP 200.
-}`,
-};
-
-const checks = [
-  
-{
-  name: "Reject invalid user IDs",
-  check: (files) =>
-    /id\s*<=\s*0/.test(files["UserService.java"]),
-  hint: "Consider whether zero is a valid user ID."
-},
-  {
-    name: "Handle missing users",
-    check: (files) =>
-      /ResponseStatusException/.test(files["UserService.java"]),
-    hint: "Spring Boot can map exceptions to HTTP status codes."
-  },
-  {
-    name: "Avoid returning null",
-    check: (files) =>
-      !/return\s+null\s*;/.test(files["UserService.java"]),
-    hint: "Returning null hides the actual problem."
-  }
-];
-
-export default function AssessmentWorkspace({ assessment, onBack }) {
-  const [files, setFiles] = useState(initialFiles);
-  const [activeFile, setActiveFile] = useState("UserService.java");
+// Each assessment has its own virtual files, hints, language and checks.
+export default function AssessmentWorkspace({ assessment, onBack, onResultSaved }) {
+  const challenge = challenges[assessment.id];
+  const [files, setFiles] = useState(() => ({ ...(challenge?.files || {}) }));
+  const [activeFile, setActiveFile] = useState(challenge?.startingFile || "");
   const [results, setResults] = useState(null);
   const [showHint, setShowHint] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
-  
-function runChecks() {
-  const updated = checks.map((test) => ({
-    name: test.name,
-    passed: test.check(files),
-    hint: test.hint,
-  }));
-
-  setResults(updated);
-
-  const passedCount = updated.filter((test) => test.passed).length;
-
-  saveAssessmentResult({
-    assessmentId: assessment.id,
-    title: assessment.title,
-    passed: passedCount,
-    total: updated.length,
-    score: Math.round((passedCount / updated.length) * 100),
-    completed: passedCount === updated.length,
-  });
-}
-
-
-  function resetFiles() {
-    setFiles(initialFiles);
+  // Reset when another assessment is selected without unmounting the workspace.
+  useEffect(() => {
+    if (!challenge) return;
+    setFiles({ ...challenge.files });
+    setActiveFile(challenge.startingFile);
     setResults(null);
     setShowHint(false);
+    setSaveError("");
+  }, [challenge]);
+
+  if (!challenge) {
+    return (
+      <section className="rounded-xl bg-white p-6">
+        <p>This challenge is not available.</p>
+        <button type="button" onClick={onBack} className="mt-4 text-indigo-600">
+          Back to assessments
+        </button>
+      </section>
+    );
   }
+
+  const languageFor = (name) => {
+    if (name.endsWith(".java")) return "java";
+    if (name.endsWith(".sql")) return "sql";
+    if (name.endsWith(".jsx")) return "javascript";
+    if (name.endsWith(".md")) return "markdown";
+    return challenge.language;
+  };
+
+  const runChecks = () => {
+    const updated = challenge.checks.map((test) => ({
+      name: test.name,
+      passed: test.check(files),
+      hint: test.hint,
+    }));
+    setResults(updated);
+
+    const passed = updated.filter((test) => test.passed).length;
+    setSaveError("");
+    try {
+      saveAssessmentResult({
+        assessmentId: assessment.id,
+        title: assessment.title,
+        passed,
+        total: updated.length,
+        score: Math.round((passed / updated.length) * 100),
+        completed: passed === updated.length,
+      });
+      onResultSaved?.();
+    } catch {
+      setSaveError("Checks ran, but progress could not be saved in this browser.");
+    }
+  };
+
+  const resetFiles = () => {
+    setFiles({ ...challenge.files });
+    setActiveFile(challenge.startingFile);
+    setResults(null);
+    setShowHint(false);
+    setSaveError("");
+  };
+
+  const unsolved = results?.filter((result) => !result.passed) || [];
 
   return (
     <div className="space-y-5">
-      <button
-        onClick={onBack}
-        className="flex items-center gap-2 text-sm text-indigo-600"
-      >
+      <button type="button" onClick={onBack} className="flex items-center gap-2 text-sm text-indigo-600">
         <ArrowLeft size={16} /> Back to assessments
       </button>
 
       <div>
-        <h2 className="text-2xl font-bold">
-          {assessment.title}
-        </h2>
-        <p className="mt-2 text-sm text-slate-500">
-          Debug the provided project and verify your fixes.
-        </p>
+        <h2 className="text-2xl font-bold">{assessment.title}</h2>
+        <p className="mt-2 text-sm text-slate-500">{challenge.description}</p>
       </div>
+
+      <section className="rounded-xl border border-slate-200 bg-white p-5">
+        <h3 className="font-semibold">Your task</h3>
+        <ul className="mt-3 list-inside list-disc space-y-2 text-sm text-slate-600">
+          {challenge.instructions.map((step) => <li key={step}>{step}</li>)}
+        </ul>
+      </section>
 
       <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
         <aside className="rounded-xl border border-slate-200 bg-white p-4">
-          <h3 className="mb-4 text-xs font-bold uppercase text-slate-500">
-            Project Explorer
-          </h3>
-
+          <h3 className="mb-4 text-xs font-bold uppercase text-slate-500">Project Explorer</h3>
           {Object.keys(files).map((filename) => (
             <button
+              type="button"
               key={filename}
               onClick={() => setActiveFile(filename)}
-              className={`mb-2 flex w-full items-center gap-2 rounded-lg
-                px-3 py-2 text-left text-xs
-                ${activeFile === filename
-                  ? "bg-indigo-50 text-indigo-700"
-                  : "hover:bg-slate-100"}`}
+              className={`mb-2 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ${
+                activeFile === filename ? "bg-indigo-50 text-indigo-700" : "hover:bg-slate-100"
+              }`}
             >
-              <FileCode2 size={16} />
-              {filename}
+              <FileCode2 size={16} className="shrink-0" />
+              <span className="break-all">{filename}</span>
             </button>
           ))}
         </aside>
 
         <div className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white">
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-            <span className="text-sm font-semibold">{activeFile}</span>
-            <button
-              onClick={resetFiles}
-              className="flex items-center gap-2 text-xs text-slate-500"
-            >
+            <span className="truncate text-sm font-semibold">{activeFile}</span>
+            <button type="button" onClick={resetFiles} className="flex shrink-0 items-center gap-2 text-xs text-slate-500">
               <RotateCcw size={14} /> Reset
             </button>
           </div>
-
           <Editor
+            key={`${assessment.id}-${activeFile}`}
             height="390px"
-            language="java"
+            language={languageFor(activeFile)}
             theme="vs-dark"
-            path={activeFile}
-            value={files[activeFile]}
-            onChange={(value) =>
-              setFiles((previous) => ({
-                ...previous,
-                [activeFile]: value ?? ""
-              }))
-            }
-            options={{
-              minimap: { enabled: false },
-              fontSize: 14,
-              automaticLayout: true
+            path={`${assessment.id}/${activeFile}`}
+            value={files[activeFile] || ""}
+            onChange={(value) => {
+              setFiles((previous) => ({ ...previous, [activeFile]: value ?? "" }));
+              setResults(null);
             }}
+            options={{ minimap: { enabled: false }, fontSize: 14, automaticLayout: true }}
           />
         </div>
       </div>
 
       <div className="flex flex-wrap gap-3">
-        <button
-          onClick={runChecks}
-          className="flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-3 text-sm font-semibold text-white"
-        >
+        <button type="button" onClick={runChecks} className="flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-3 text-sm font-semibold text-white">
           <Play size={16} /> Check Solution
         </button>
-
-        <button
-          onClick={() => setShowHint(!showHint)}
-          className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-5 py-3 text-sm"
-        >
-          <Lightbulb size={16} /> {showHint ? "Hide Hint" : "Get Hint"}
+        <button type="button" onClick={() => setShowHint((old) => !old)} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-5 py-3 text-sm">
+          <Lightbulb size={16} /> {showHint ? "Hide Hints" : "Get Hints"}
         </button>
       </div>
 
       {showHint && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
-          <h3 className="font-semibold">Debugging Hint</h3>
-          <p className="mt-2 text-sm text-slate-700">
-            Check how the service validates user IDs and handles
-            users that do not exist.
-          </p>
+          <h3 className="font-semibold">Debugging hints</h3>
+          <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-700">
+            {(unsolved.length ? unsolved : challenge.checks).map((test) => (
+              <li key={test.name}>{test.hint}</li>
+            ))}
+          </ul>
         </div>
       )}
 
+      {saveError && <p role="alert" className="text-sm text-red-600">{saveError}</p>}
       {results && (
-        <div className="rounded-xl border border-slate-200 bg-white p-5">
+        <section className="rounded-xl border border-slate-200 bg-white p-5">
           <h3 className="mb-4 font-semibold">Solution Checks</h3>
-
           {results.map((result) => (
-            <div
-              key={result.name}
-              className="flex items-center gap-3 border-b border-slate-100 py-3"
-            >
-              {result.passed ? (
-                <CheckCircle2 className="text-green-600" size={19} />
-              ) : (
-                <XCircle className="text-red-500" size={19} />
-              )}
-
+            <div key={result.name} className="flex items-start gap-3 border-b border-slate-100 py-3">
+              {result.passed ? <CheckCircle2 className="shrink-0 text-green-600" size={19} /> : <XCircle className="shrink-0 text-red-500" size={19} />}
               <div>
                 <p className="text-sm font-medium">{result.name}</p>
-                {!result.passed && (
-                  <p className="mt-1 text-xs text-slate-500">
-                    {result.hint}
-                  </p>
-                )}
+                {!result.passed && <p className="mt-1 text-xs text-slate-500">{result.hint}</p>}
               </div>
             </div>
           ))}
-
-          <p className="mt-4 text-sm font-semibold">
-            Passed: {results.filter((r) => r.passed).length}
-            /{results.length}
-          </p>
-        </div>
+          <p className="mt-4 text-sm font-semibold">Passed: {results.filter((r) => r.passed).length}/{results.length}</p>
+          <p className="mt-2 text-xs text-slate-500">These are rule-based source checks, not actual compilation, database execution, or runtime tests.</p>
+        </section>
       )}
     </div>
   );
