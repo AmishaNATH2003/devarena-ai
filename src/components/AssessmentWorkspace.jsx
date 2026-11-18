@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Editor from "@monaco-editor/react";
 import { saveAssessmentResult } from "../utils/progressStorage";
 import { challenges } from "../data/challenges";
@@ -17,14 +17,6 @@ export default function AssessmentWorkspace({ assessment, onBack, onResultSaved 
   const [saveError, setSaveError] = useState("");
 
   // Reset when another assessment is selected without unmounting the workspace.
-  useEffect(() => {
-    if (!challenge) return;
-    setFiles({ ...challenge.files });
-    setActiveFile(challenge.startingFile);
-    setResults(null);
-    setShowHint(false);
-    setSaveError("");
-  }, [challenge]);
 
   if (!challenge) {
     return (
