@@ -2,6 +2,7 @@ import { useState } from "react";
 import Editor from "@monaco-editor/react";
 import { saveAssessmentResult } from "../utils/progressStorage";
 import { challenges } from "../data/challenges";
+import DebuggingCoach from "./DebuggingCoach";
 import {
   ArrowLeft, Play, Lightbulb, FileCode2, CheckCircle2,
   XCircle, RotateCcw,
@@ -130,7 +131,12 @@ export default function AssessmentWorkspace({ assessment, onBack, onResultSaved 
           />
         </div>
       </div>
-
+      <DebuggingCoach
+  key={assessment.id}
+  assessmentId={assessment.id}
+  files={files}
+  activeFile={activeFile}
+/>
       <div className="flex flex-wrap gap-3">
         <button type="button" onClick={runChecks} className="flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-3 text-sm font-semibold text-white">
           <Play size={16} /> Check Solution
