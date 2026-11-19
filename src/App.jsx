@@ -4,7 +4,7 @@ import { useState } from "react";
 import AssessmentWorkspace from "./components/AssessmentWorkspace";
 import ProgressDashboard from "./components/ProgressDashboard";
 import InterviewPractice from "./components/InterviewPractice";
-
+import GenerateAssessment from "./components/GenerateAssessment";
 import { getAssessmentResults } from "./utils/progressStorage";
 
 import {
