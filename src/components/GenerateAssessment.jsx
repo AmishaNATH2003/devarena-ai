@@ -1,263 +1,301 @@
 
-import { useState } from "react";
-import {
-  Sparkles,
-  Loader2,
-  AlertCircle,
-  Code2,
-  ArrowRight,
-  FileCode2,
-  CheckCircle2,
-} from "lucide-react";
+import process from "node:process";
 
-export default function GenerateAssessment({ onGenerated, onStart }) {
-  const [technology, setTechnology] = useState("java");
-  const [difficulty, setDifficulty] = useState("beginner");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [assessment, setAssessment] = useState(null);
+const ALLOWED_TECHNOLOGIES = ["java", "sql", "react"];
 
-  const generateAssessment = async () => {
-    if (loading) return;
+const ALLOWED_DIFFICULTIES = [
+  "beginner",
+  "intermediate",
+  "advanced",
+];
 
-    setLoading(true);
-    setError("");
-    setAssessment(null);
+const GEMINI_MODEL = "gemini-3.5-flash-lite";
 
-    try {
-      const response = await fetch("/api/generate-assessment", {
+const GEMINI_ENDPOINT =
+  `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+
+const RETRYABLE_STATUS_CODES = [502, 503, 504];
+
+const sleep = (milliseconds) =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+export default async function handler(req, res) {
+  // Accept POST requests only.
+  if (req.method !== "POST") {
+    return res.status(405).json({
+      error: "Only POST requests are supported.",
+    });
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY;
+
+  if (!apiKey) {
+    return res.status(503).json({
+      error: "AI service is not configured.",
+    });
+  }
+
+  const { technology, difficulty } = req.body || {};
+
+  // Validate candidate selections.
+  if (
+    !ALLOWED_TECHNOLOGIES.includes(technology) ||
+    !ALLOWED_DIFFICULTIES.includes(difficulty)
+  ) {
+    return res.status(400).json({
+      error: "Invalid technology or difficulty.",
+    });
+  }
+
+  // Define assessment complexity.
+  const complexity = {
+    beginner: {
+      bugs: "1 to 2",
+      description:
+        "Focus on foundational debugging, simple business logic, and clear requirements.",
+    },
+    intermediate: {
+      bugs: "2 to 3",
+      description:
+        "Include interactions between files, realistic business logic, validation, and error handling.",
+    },
+    advanced: {
+      bugs: "3 to 4",
+      description:
+        "Include more complex interactions, edge cases, and realistic architectural or state-management problems.",
+    },
+  };
+
+  const selectedComplexity = complexity[difficulty];
+
+  const prompt = `
+You are DevArena AI's software engineering assessment designer.
+
+Generate ONE original, practical software debugging assessment.
+
+Technology: ${technology}
+Difficulty: ${difficulty}
+
+Complexity requirements:
+- Include ${selectedComplexity.bugs} intentional bugs.
+- ${selectedComplexity.description}
+- Generate 2 to 4 related source files.
+- Make the scenario feel like a real engineering assignment.
+- Keep the project small enough to inspect in a browser editor.
+- All supplied source files must be internally consistent.
+- Include clear and testable acceptance criteria.
+- Describe expected behavior and existing problems.
+- Do not reveal the corrected code or complete solution.
+- Do not include Markdown code fences.
+- Do not claim that code has been compiled or tested.
+
+Technology guidelines:
+
+JAVA:
+Create a small Java application or backend-related task.
+Use realistic classes and methods.
+
+SQL:
+Create realistic database queries and debugging tasks.
+Include sample table schemas or data where appropriate.
+
+REACT:
+Create a small React application with JavaScript or JSX.
+Focus on component behavior, state, API integration,
+or error handling.
+
+Return valid JSON only in this exact structure:
+
+{
+  "title": "Assessment title",
+  "description": "Real-world scenario and expected behavior",
+  "technology": "${technology}",
+  "difficulty": "${difficulty}",
+  "startingFile": "Main.java",
+  "instructions": [
+    "First acceptance criterion",
+    "Second acceptance criterion",
+    "Third acceptance criterion"
+  ],
+  "files": {
+    "Main.java": "Actual source code",
+    "OtherFile.java": "Actual source code"
+  }
+}
+
+Important:
+The filenames above are examples only.
+Choose filenames and extensions appropriate for ${technology}.
+The startingFile must exist in the files object.
+All file values must contain source code or relevant project data.
+`;
+
+  const requestBody = JSON.stringify({
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text: prompt,
+          },
+        ],
+      },
+    ],
+    generationConfig: {
+      responseMimeType: "application/json",
+      maxOutputTokens: 4096,
+    },
+  });
+
+  try {
+    let response;
+
+    // Retry temporary upstream service failures.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      response = await fetch(GEMINI_ENDPOINT, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
         },
-        body: JSON.stringify({
-          technology,
-          difficulty,
-        }),
+        body: requestBody,
+        signal: AbortSignal.timeout(30000),
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error || "Unable to generate assessment."
-        );
+      if (response.ok) {
+        break;
       }
 
-      const generated = data.assessment;
+      console.error(
+        `Assessment generation attempt ${attempt + 1} failed:`,
+        response.status
+      );
 
-      if (
-        !generated ||
-        typeof generated.title !== "string" ||
-        !generated.files ||
-        typeof generated.files !== "object" ||
-        Array.isArray(generated.files) ||
-        Object.keys(generated.files).length === 0 ||
-        !Object.prototype.hasOwnProperty.call(
-          generated.files,
-          generated.startingFile
-        )
-      ) {
-        throw new Error("Invalid assessment data received.");
+      if (!RETRYABLE_STATUS_CODES.includes(response.status)) {
+        break;
       }
 
-      setAssessment(generated);
-      onGenerated?.(generated);
-    } catch (err) {
-      setError(err.message || "Something went wrong.");
-    } finally {
-      setLoading(false);
+      if (attempt < 2) {
+        const delay = 1000 * 2 ** attempt;
+        await sleep(delay);
+      }
     }
-  };
 
-  const startAssessment = () => {
-    if (!assessment || typeof onStart !== "function") return;
+    // Handle unsuccessful Gemini responses.
+    if (!response.ok) {
+      console.error(
+        "Assessment generation failed:",
+        response.status
+      );
 
-    onStart({
-      id: `ai-${Date.now()}`,
-      title: assessment.title,
-      description: assessment.description,
-      category: assessment.technology,
-      difficulty: assessment.difficulty,
-      generatedChallenge: assessment,
+      const errorMessage =
+        response.status === 429
+          ? "AI request quota reached. Please try again later."
+          : RETRYABLE_STATUS_CODES.includes(response.status)
+            ? "Gemini is temporarily unavailable. Please try again later."
+            : "AI assessment generation failed.";
+
+      return res.status(502).json({
+        error: errorMessage,
+      });
+    }
+
+    // Read Gemini response.
+    const data = await response.json();
+
+    const raw = data.candidates?.[0]?.content?.parts
+      ?.filter((part) => typeof part.text === "string")
+      .map((part) => part.text)
+      .join("");
+
+    if (!raw) {
+      return res.status(502).json({
+        error: "Gemini returned an empty assessment.",
+      });
+    }
+
+    let generated;
+
+    try {
+      generated = JSON.parse(raw);
+    } catch {
+      return res.status(502).json({
+        error: "Gemini returned invalid JSON.",
+      });
+    }
+
+    // Validate generated assessment structure.
+    const files = generated?.files;
+
+    const validFiles =
+      files &&
+      typeof files === "object" &&
+      !Array.isArray(files) &&
+      Object.keys(files).length >= 2 &&
+      Object.keys(files).length <= 8 &&
+      Object.entries(files).every(
+        ([name, code]) =>
+          typeof name === "string" &&
+          name.length <= 120 &&
+          typeof code === "string" &&
+          code.trim().length > 0 &&
+          code.length <= 12000
+      );
+
+    const validInstructions =
+      Array.isArray(generated?.instructions) &&
+      generated.instructions.length > 0 &&
+      generated.instructions.length <= 15 &&
+      generated.instructions.every(
+        (instruction) =>
+          typeof instruction === "string" &&
+          instruction.trim().length > 0 &&
+          instruction.length <= 1000
+      );
+
+    if (
+      typeof generated?.title !== "string" ||
+      !generated.title.trim() ||
+      generated.title.length > 200 ||
+      typeof generated.description !== "string" ||
+      !generated.description.trim() ||
+      generated.description.length > 4000 ||
+      generated.technology !== technology ||
+      generated.difficulty !== difficulty ||
+      typeof generated.startingFile !== "string" ||
+      !validFiles ||
+      !validInstructions ||
+      !Object.prototype.hasOwnProperty.call(
+        files,
+        generated.startingFile
+      )
+    ) {
+      return res.status(502).json({
+        error: "Gemini returned an invalid assessment format.",
+      });
+    }
+
+    // Return assessment to React frontend.
+    return res.status(200).json({
+      assessment: {
+        title: generated.title,
+        description: generated.description,
+        technology,
+        difficulty,
+        startingFile: generated.startingFile,
+        instructions: generated.instructions,
+        files: generated.files,
+      },
     });
-  };
+  } catch (error) {
+    console.error(
+      "Assessment generation error:",
+      error.message
+    );
 
-  return (
-    <section className="rounded-2xl border border-indigo-100 bg-white p-6 shadow-sm">
-      <div className="flex items-center gap-3">
-        <div className="rounded-xl bg-indigo-600 p-3 text-white">
-          <Sparkles size={22} />
-        </div>
-
-        <div>
-          <h2 className="text-xl font-bold text-slate-900">
-            AI Assessment Generator
-          </h2>
-
-          <p className="mt-1 text-sm text-slate-500">
-            Generate realistic debugging projects using Gemini AI.
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-6 grid gap-4 sm:grid-cols-2">
-        <div>
-          <label
-            htmlFor="assessment-technology"
-            className="mb-2 block text-sm font-medium"
-          >
-            Technology
-          </label>
-
-          <select
-            id="assessment-technology"
-            value={technology}
-            disabled={loading}
-            onChange={(event) => {
-              setTechnology(event.target.value);
-              setAssessment(null);
-            }}
-            className="w-full rounded-xl border border-slate-200 bg-white p-3"
-          >
-            <option value="java">Java</option>
-            <option value="sql">SQL</option>
-            <option value="react">React</option>
-          </select>
-        </div>
-
-        <div>
-          <label
-            htmlFor="assessment-difficulty"
-            className="mb-2 block text-sm font-medium"
-          >
-            Difficulty
-          </label>
-
-          <select
-            id="assessment-difficulty"
-            value={difficulty}
-            disabled={loading}
-            onChange={(event) => {
-              setDifficulty(event.target.value);
-              setAssessment(null);
-            }}
-            className="w-full rounded-xl border border-slate-200 bg-white p-3"
-          >
-            <option value="beginner">Beginner</option>
-            <option value="intermediate">Intermediate</option>
-            <option value="advanced">Advanced</option>
-          </select>
-        </div>
-      </div>
-
-      <button
-        type="button"
-        onClick={generateAssessment}
-        disabled={loading}
-        className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white hover:bg-indigo-700 disabled:opacity-60"
-      >
-        {loading ? (
-          <>
-            <Loader2 size={18} className="animate-spin" />
-            Generating your project...
-          </>
-        ) : (
-          <>
-            <Sparkles size={18} />
-            Generate Assessment
-          </>
-        )}
-      </button>
-
-      {error && (
-        <p
-          role="alert"
-          className="mt-4 flex items-center gap-2 text-sm text-red-600"
-        >
-          <AlertCircle size={17} />
-          {error}
-        </p>
-      )}
-
-      {assessment && (
-        <div className="mt-6 rounded-2xl border border-indigo-200 bg-indigo-50 p-5">
-          <div className="flex items-center gap-2 text-sm font-medium text-indigo-700">
-            <CheckCircle2 size={18} />
-            Assessment generated successfully
-          </div>
-
-          <h3 className="mt-4 text-xl font-bold text-slate-900">
-            {assessment.title}
-          </h3>
-
-          <p className="mt-3 text-sm leading-6 text-slate-600">
-            {assessment.description}
-          </p>
-
-          <div className="mt-4 flex flex-wrap gap-2">
-            <span className="rounded-lg bg-white px-3 py-1 text-xs font-medium uppercase text-indigo-700">
-              {assessment.technology || technology}
-            </span>
-
-            <span className="rounded-lg bg-white px-3 py-1 text-xs font-medium capitalize text-indigo-700">
-              {assessment.difficulty || difficulty}
-            </span>
-          </div>
-
-          <div className="mt-5">
-            <div className="mb-3 flex items-center gap-2">
-              <FileCode2 size={17} className="text-indigo-600" />
-              <h4 className="font-semibold text-slate-900">
-                Project Files
-              </h4>
-            </div>
-
-            <div className="space-y-2">
-              {Object.keys(assessment.files).map((filename) => (
-                <div
-                  key={filename}
-                  className="flex items-center gap-2 rounded-lg border border-indigo-100 bg-white px-3 py-2 text-sm text-slate-700"
-                >
-                  <Code2 size={15} className="text-indigo-600" />
-                  <span className="break-all">{filename}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {Array.isArray(assessment.instructions) &&
-            assessment.instructions.length > 0 && (
-              <div className="mt-5">
-                <h4 className="font-semibold text-slate-900">
-                  Your Task
-                </h4>
-
-                <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-600">
-                  {assessment.instructions.map((instruction, index) => (
-                    <li key={index}>{instruction}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-          <button
-            type="button"
-            onClick={startAssessment}
-            disabled={typeof onStart !== "function"}
-            className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Code2 size={18} />
-            Start Assessment
-            <ArrowRight size={17} />
-          </button>
-        </div>
-      )}
-
-      <p className="mt-4 text-xs text-slate-500">
-        AI-generated projects may contain mistakes.
-        Automated code execution and evaluation are not yet available.
-      </p>
-    </section>
-  );
+    return res.status(502).json({
+      error:
+        "Unable to generate an assessment. Please try again.",
+    });
+  }
 }
