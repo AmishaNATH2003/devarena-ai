@@ -74,7 +74,7 @@ export function getCoachReply({
       failed[0].hint
     );
   }
-
+    
   if (
     question.includes("solution") ||
     question.includes("answer")
