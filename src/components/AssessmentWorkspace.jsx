@@ -136,6 +136,7 @@ export default function AssessmentWorkspace({ assessment, onBack, onResultSaved 
   assessmentId={assessment.id}
   files={files}
   activeFile={activeFile}
+  challengeDescription={challenge.description}
 />
       <div className="flex flex-wrap gap-3">
         <button type="button" onClick={runChecks} className="flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-3 text-sm font-semibold text-white">

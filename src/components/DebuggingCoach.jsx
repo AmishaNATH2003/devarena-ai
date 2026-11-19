@@ -1,7 +1,6 @@
 
 import { useState } from "react";
-import { Bot, Send, Sparkles } from "lucide-react";
-import { getCoachReply } from "../utils/coachEngine";
+import { Bot, Send, Sparkles, Loader2 } from "lucide-react";
 
 const suggestions = [
   "Explain this file",
@@ -14,37 +13,65 @@ export default function DebuggingCoach({
   assessmentId,
   files,
   activeFile,
+  challengeDescription = "",
 }) {
   const [messages, setMessages] = useState([
     {
       role: "coach",
-      text:
-        "Hi! I'm your debugging coach. " +
-        "I can help you investigate the project without " +
-        "giving away the full solution.",
+      text: "Hi! I'm your DevArena AI Debugging Coach. Ask me about the project you're working on.",
     },
   ]);
 
   const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  const sendMessage = (text) => {
+  const sendMessage = async (text) => {
     const question = text.trim();
-    if (!question) return;
 
-    const reply = getCoachReply({
-      assessmentId,
-      files,
-      activeFile,
-      message: question,
-    });
+    if (!question || loading) return;
 
     setMessages((previous) => [
       ...previous,
       { role: "user", text: question },
-      { role: "coach", text: reply },
     ]);
 
     setInput("");
+    setLoading(true);
+    setError("");
+
+    try {
+      const response = await fetch("/api/coach", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          assessmentId,
+          message: question,
+          activeFile,
+          files,
+          challengeDescription,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.error || "Unable to get an AI response."
+        );
+      }
+
+      setMessages((previous) => [
+        ...previous,
+        { role: "coach", text: data.reply },
+      ]);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -56,18 +83,15 @@ export default function DebuggingCoach({
 
         <div>
           <h3 className="font-semibold text-slate-900">
-            DevArena Debugging Coach
+            DevArena AI Debugging Coach
           </h3>
           <p className="text-xs text-slate-500">
-            Offline guided assistance
+            Powered by DevArena AI
           </p>
         </div>
       </div>
 
-      <div
-        className="max-h-80 space-y-4 overflow-y-auto p-5"
-        aria-live="polite"
-      >
+      <div className="max-h-80 space-y-4 overflow-y-auto p-5" aria-live="polite">
         {messages.map((message, index) => (
           <div
             key={index}
@@ -78,7 +102,7 @@ export default function DebuggingCoach({
             }`}
           >
             <div
-              className={`max-w-[90%] rounded-2xl p-4 text-sm leading-6 ${
+              className={`max-w-[90%] whitespace-pre-wrap rounded-2xl p-4 text-sm leading-6 ${
                 message.role === "user"
                   ? "bg-indigo-600 text-white"
                   : "bg-slate-100 text-slate-700"
@@ -88,7 +112,20 @@ export default function DebuggingCoach({
             </div>
           </div>
         ))}
+
+        {loading && (
+          <div className="flex items-center gap-2 text-sm text-indigo-600">
+            <Loader2 size={17} className="animate-spin" />
+            DevArena AI is analyzing your code...
+          </div>
+        )}
       </div>
+
+      {error && (
+        <p role="alert" className="px-5 text-sm text-red-600">
+          {error}
+        </p>
+      )}
 
       <div className="border-t border-slate-100 p-4">
         <div className="mb-4 flex flex-wrap gap-2">
@@ -96,8 +133,9 @@ export default function DebuggingCoach({
             <button
               key={suggestion}
               type="button"
+              disabled={loading}
               onClick={() => sendMessage(suggestion)}
-              className="flex items-center gap-1 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-100"
+              className="flex items-center gap-1 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
             >
               <Sparkles size={13} />
               {suggestion}
@@ -115,14 +153,14 @@ export default function DebuggingCoach({
           <input
             value={input}
             onChange={(event) => setInput(event.target.value)}
-            placeholder="Ask about the bug..."
+            placeholder="Ask DevArena Ai about your code..."
             aria-label="Ask the debugging coach"
             className="min-w-0 flex-1 rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-indigo-500"
           />
 
           <button
             type="submit"
-            disabled={!input.trim()}
+            disabled={loading || !input.trim()}
             className="rounded-xl bg-indigo-600 px-4 py-3 text-white disabled:opacity-50"
             aria-label="Send message"
           >
