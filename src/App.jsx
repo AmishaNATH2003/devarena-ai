@@ -68,38 +68,66 @@ export default function App() {
   const [selectedAssessment, setSelectedAssessment] =
     useState(null);
 
+  // Stores context for the Gemini AI interview.
+  const [interviewAssessment, setInterviewAssessment] =
+    useState(null);
+
   const [progress, setProgress] = useState(
     () => getAssessmentResults()
   );
 
-  // Refresh saved assessment results
+  // Refresh saved assessment results.
   const refreshProgress = () => {
     setProgress(getAssessmentResults());
   };
 
-  // Navigate between pages
-  const choosePage = (page) => {
-    refreshProgress();
-    setActivePage(page);
-    setSidebarOpen(false);
-    setSelectedAssessment(null);
-  };
+  // Navigate between pages.
+  
+const choosePage = (page) => {
+  refreshProgress();
+  setActivePage(page);
+  setSidebarOpen(false);
 
-  // Open a predefined or AI-generated assessment
+  // Keep the current assignment when switching pages.
+  // The user can return to it from the Assessments tab.
+};
+
+
+  // Open a predefined or Gemini-generated assessment.
   const openAssessment = (assessment) => {
     setActivePage("Assessments");
     setSelectedAssessment(assessment);
     setSidebarOpen(false);
+
+    // Prepare the project context for AI interviews.
+    const challenge = assessment.generatedChallenge;
+
+    const codeSummary = challenge?.files
+      ? Object.entries(challenge.files)
+          .map(
+            ([filename, code]) =>
+              `File: ${filename}\n${code}`
+          )
+          .join("\n\n")
+          .slice(0, 10000)
+      : "";
+
+    setInterviewAssessment({
+      title: assessment.title,
+      description:
+        challenge?.description || assessment.description,
+      codeSummary,
+    });
   };
 
-  // Return to assessment list
+  // Return to the assessment list.
   const closeAssessment = () => {
     refreshProgress();
     setSelectedAssessment(null);
     setActivePage("Assessments");
   };
 
-  // Dashboard statistics
+  // Dashboard statistics.
   const results = Object.values(progress);
 
   const completedCount = results.filter(
@@ -224,13 +252,14 @@ export default function App() {
           <div className="mx-auto max-w-6xl p-5 md:p-10">
 
             {/* ASSESSMENT WORKSPACE */}
-            {selectedAssessment ? (
+            {activePage === "Assessments" && selectedAssessment ? (
               <AssessmentWorkspace
-                key={selectedAssessment.id}
-                assessment={selectedAssessment}
-                onBack={closeAssessment}
-                onResultSaved={refreshProgress}
-              />
+  key={selectedAssessment.id}
+  assessment={selectedAssessment}
+  onBack={closeAssessment}
+  onResultSaved={refreshProgress}
+  onCodeChange={setInterviewAssessment}
+/>
             ) : activePage === "Dashboard" ||
                 activePage === "Assessments" ? (
               <>
@@ -368,8 +397,11 @@ export default function App() {
               /* PROGRESS REPORT */
               <ProgressDashboard />
             ) : activePage === "Interview Practice" ? (
-              /* INTERVIEW PRACTICE */
-              <InterviewPractice />
+              /* AI INTERVIEW PRACTICE */
+              <InterviewPractice
+                key={interviewAssessment?.title || "general"}
+                assessment={interviewAssessment}
+              />
             ) : (
               /* SETTINGS AND OTHER PAGES */
               <section className="rounded-2xl border border-slate-200 bg-white p-8">

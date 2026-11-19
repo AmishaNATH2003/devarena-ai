@@ -1,6 +1,6 @@
 
 import process from "node:process";
-const ALLOWED_TECHNOLOGIES = ["java", "sql", "react", "C++"];
+const ALLOWED_TECHNOLOGIES = ["java", "sql", "react"];
 const ALLOWED_DIFFICULTIES = [
   "beginner",
   "intermediate",
