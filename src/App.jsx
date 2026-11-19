@@ -21,7 +21,7 @@ import {
   Sparkles,
 } from "lucide-react";
 
-// Assessment data
+// Existing predefined assessments
 const assessments = [
   {
     id: 1,
@@ -63,7 +63,6 @@ const navigation = [
 
 export default function App() {
   const [activePage, setActivePage] = useState("Dashboard");
-
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [selectedAssessment, setSelectedAssessment] =
@@ -86,7 +85,7 @@ export default function App() {
     setSelectedAssessment(null);
   };
 
-  // Open an assessment
+  // Open a predefined or AI-generated assessment
   const openAssessment = (assessment) => {
     setActivePage("Assessments");
     setSelectedAssessment(assessment);
@@ -100,7 +99,7 @@ export default function App() {
     setActivePage("Assessments");
   };
 
-  // Calculate dashboard statistics
+  // Dashboard statistics
   const results = Object.values(progress);
 
   const completedCount = results.filter(
@@ -130,12 +129,9 @@ export default function App() {
                 : "-translate-x-full"
             }`}
         >
-
           {/* LOGO */}
           <div className="flex items-center justify-between border-b border-slate-100 px-6 py-7">
-
             <div className="flex items-center gap-2">
-
               <div className="rounded-xl bg-indigo-600 p-2 text-white">
                 <Code2 size={22} />
               </div>
@@ -146,7 +142,6 @@ export default function App() {
                   AI
                 </span>
               </span>
-
             </div>
 
             <button
@@ -157,14 +152,11 @@ export default function App() {
             >
               <X size={20} />
             </button>
-
           </div>
 
           {/* NAVIGATION */}
           <nav className="space-y-2 px-4 py-6">
-
             {navigation.map(({ label, icon: Icon }) => (
-
               <button
                 type="button"
                 key={label}
@@ -177,19 +169,14 @@ export default function App() {
                       : "text-slate-600 hover:bg-slate-100"
                   }`}
               >
-
                 <Icon size={19} />
                 {label}
-
               </button>
-
             ))}
-
           </nav>
 
           {/* SIDEBAR INFORMATION */}
           <div className="mx-4 mt-8 rounded-2xl bg-indigo-50 p-4">
-
             <Sparkles
               className="text-indigo-600"
               size={22}
@@ -202,9 +189,7 @@ export default function App() {
             <p className="mt-1 text-xs leading-5 text-slate-600">
               Solve real engineering tasks, not just isolated questions.
             </p>
-
           </div>
-
         </aside>
 
         {/* MAIN CONTENT */}
@@ -212,9 +197,7 @@ export default function App() {
 
           {/* HEADER */}
           <header className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-5 md:px-10">
-
             <div className="flex items-center gap-3">
-
               <button
                 type="button"
                 className="md:hidden"
@@ -225,20 +208,16 @@ export default function App() {
               </button>
 
               <h1 className="font-semibold">
-
                 {selectedAssessment
                   ? "Assessment Workspace"
                   : activePage}
-
               </h1>
-
             </div>
 
             {/* USER AVATAR */}
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-indigo-100 font-semibold text-indigo-700">
               D
             </div>
-
           </header>
 
           {/* PAGE CONTENT */}
@@ -246,20 +225,17 @@ export default function App() {
 
             {/* ASSESSMENT WORKSPACE */}
             {selectedAssessment ? (
-
               <AssessmentWorkspace
+                key={selectedAssessment.id}
                 assessment={selectedAssessment}
                 onBack={closeAssessment}
                 onResultSaved={refreshProgress}
               />
-
             ) : activePage === "Dashboard" ||
                 activePage === "Assessments" ? (
-
               <>
                 {/* HERO SECTION */}
                 <div className="rounded-3xl bg-slate-900 p-7 text-white md:p-10">
-
                   <p className="text-sm font-medium text-indigo-300">
                     ENGINEERING PRACTICE PLATFORM
                   </p>
@@ -281,14 +257,11 @@ export default function App() {
                     Explore assessments
                     <ArrowRight size={17} />
                   </button>
-
                 </div>
 
                 {/* DASHBOARD STATISTICS */}
                 {activePage === "Dashboard" && (
-
                   <div className="mt-7 grid gap-4 sm:grid-cols-3">
-
                     {[
                       [
                         "Available Challenges",
@@ -306,12 +279,10 @@ export default function App() {
                         Clock3,
                       ],
                     ].map(([label, value, Icon]) => (
-
                       <div
                         key={label}
                         className="rounded-2xl border border-slate-200 bg-white p-6"
                       >
-
                         <Icon
                           className="text-indigo-600"
                           size={22}
@@ -324,42 +295,36 @@ export default function App() {
                         <p className="mt-1 text-sm text-slate-500">
                           {label}
                         </p>
-
                       </div>
-
                     ))}
-
                   </div>
-
                 )}
+
+                {/* AI ASSESSMENT GENERATOR */}
+                <div className="mt-8">
+                  <GenerateAssessment onStart={openAssessment} />
+                </div>
 
                 {/* ASSESSMENTS HEADING */}
                 <div className="mb-5 mt-10">
-
                   <h3 className="text-xl font-bold">
-
                     {activePage === "Dashboard"
                       ? "Recommended assessments"
                       : "All assessments"}
-
                   </h3>
 
                   <p className="mt-2 text-sm text-slate-500">
                     Start with a realistic development challenge.
                   </p>
-
                 </div>
 
-                {/* ASSESSMENT CARDS */}
+                {/* PREDEFINED ASSESSMENT CARDS */}
                 <div className="grid gap-5 lg:grid-cols-3">
-
                   {assessments.map((item) => (
-
                     <article
                       key={item.id}
                       className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
                     >
-
                       {/* DIFFICULTY */}
                       <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
                         {item.difficulty}
@@ -395,30 +360,19 @@ export default function App() {
                         View challenge
                         <ArrowRight size={16} />
                       </button>
-
                     </article>
-
                   ))}
-
                 </div>
-
               </>
-
             ) : activePage === "My Progress" ? (
-
               /* PROGRESS REPORT */
               <ProgressDashboard />
-
             ) : activePage === "Interview Practice" ? (
-
               /* INTERVIEW PRACTICE */
               <InterviewPractice />
-
             ) : (
-
               /* SETTINGS AND OTHER PAGES */
               <section className="rounded-2xl border border-slate-200 bg-white p-8">
-
                 <h2 className="text-2xl font-bold">
                   {activePage}
                 </h2>
@@ -427,15 +381,10 @@ export default function App() {
                   This section will be implemented in the upcoming
                   development stages.
                 </p>
-
               </section>
-
             )}
-
           </div>
-
         </main>
-
       </div>
     </div>
   );
