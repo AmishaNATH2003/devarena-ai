@@ -1,5 +1,6 @@
 
 import { useState } from "react";
+
 import {
   Trophy,
   CheckCircle2,
@@ -8,39 +9,561 @@ import {
   CalendarDays,
   Mic,
   MessageSquare,
+  History,
+  TrendingUp,
+  ChevronDown,
+  ChevronUp,
+  BriefcaseBusiness,
+  FileUser,
+  Lightbulb,
+  AlertCircle,
 } from "lucide-react";
 
 import { getAssessmentResults } from "../utils/progressStorage";
-import { getInterviewResult } from "../utils/interviewStorage";
+import { getInterviewHistory } from "../utils/interviewStorage";
+
+// Ensure progress bars stay between 0 and 100.
+function safeScore(value) {
+  const number = Number(value);
+
+  if (!Number.isFinite(number)) {
+    return 0;
+  }
+
+  return Math.min(100, Math.max(0, number));
+}
+
+// Format a saved date.
+function formatDate(date) {
+  if (!date) return "Date unavailable";
+
+  const parsed = new Date(date);
+
+  return Number.isNaN(parsed.getTime())
+    ? "Date unavailable"
+    : parsed.toLocaleString();
+}
+
+// Consistent progress bar.
+function ScoreBar({ score, height = "h-2" }) {
+  return (
+    <div
+      className={`${height} overflow-hidden rounded-full bg-slate-100`}
+    >
+      <div
+        className="h-full rounded-full bg-indigo-600 transition-all"
+        style={{
+          width: `${safeScore(score)}%`,
+        }}
+      />
+    </div>
+  );
+}
+
+// Summary statistics card.
+function StatCard({ label, value, Icon }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="inline-flex rounded-xl bg-indigo-50 p-3">
+        <Icon
+          size={22}
+          className="text-indigo-600"
+        />
+      </div>
+
+      <p className="mt-4 text-2xl font-bold text-slate-900">
+        {value}
+      </p>
+
+      <p className="mt-2 text-sm text-slate-500">
+        {label}
+      </p>
+    </div>
+  );
+}
+
+// Single coding assessment result.
+function AssessmentResultCard({ attempt }) {
+  const isAiEvaluation =
+    attempt.evaluationType === "ai-static-review";
+
+  const [expanded, setExpanded] = useState(false);
+
+  const evaluation = attempt.evaluation;
+
+  return (
+    <article className="rounded-xl border border-slate-200 p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h4 className="font-semibold text-slate-900">
+            {attempt.title || "Coding Assessment"}
+          </h4>
+
+          <p className="mt-2 text-xs text-slate-500">
+            {isAiEvaluation
+              ? "Gemini AI Static Code Evaluation"
+              : "Predefined Source-Pattern Checks"}
+          </p>
+        </div>
+
+        <div className="text-right">
+          <p className="text-2xl font-bold text-indigo-600">
+            {safeScore(attempt.score)}%
+          </p>
+
+          <span
+            className={`mt-2 inline-block rounded-full px-3 py-1 text-xs font-semibold ${
+              attempt.completed
+                ? "bg-green-50 text-green-700"
+                : "bg-amber-50 text-amber-700"
+            }`}
+          >
+            {attempt.completed
+              ? "Completed"
+              : "Attempted"}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <ScoreBar score={attempt.score} />
+      </div>
+
+      {!isAiEvaluation && (
+        <p className="mt-3 text-sm text-slate-600">
+          {attempt.passed ?? 0}/
+          {attempt.total ?? 0} source checks passed
+        </p>
+      )}
+
+      <div className="mt-4 flex items-center gap-2 text-xs text-slate-500">
+        <CalendarDays size={14} />
+        {formatDate(attempt.completedAt)}
+      </div>
+
+      {isAiEvaluation && evaluation && (
+        <div className="mt-5 border-t border-slate-100 pt-4">
+          <button
+            type="button"
+            onClick={() =>
+              setExpanded((previous) => !previous)
+            }
+            aria-expanded={expanded}
+            className="flex w-full items-center justify-between text-sm font-semibold text-indigo-700"
+          >
+            View AI Evaluation Details
+
+            {expanded ? (
+              <ChevronUp size={18} />
+            ) : (
+              <ChevronDown size={18} />
+            )}
+          </button>
+
+          {expanded && (
+            <div className="mt-5 space-y-5">
+              <div className="grid gap-3 sm:grid-cols-3">
+                {[
+                  [
+                    "Correctness",
+                    evaluation.correctness,
+                  ],
+                  [
+                    "Code Quality",
+                    evaluation.codeQuality,
+                  ],
+                  [
+                    "Requirements",
+                    evaluation.requirements,
+                  ],
+                ].map(([label, score]) => (
+                  <div
+                    key={label}
+                    className="rounded-xl bg-indigo-50 p-4 text-center"
+                  >
+                    <p className="text-xl font-bold text-indigo-700">
+                      {safeScore(score)}%
+                    </p>
+
+                    <p className="mt-1 text-xs text-slate-600">
+                      {label}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              {evaluation.summary && (
+                <div>
+                  <h5 className="text-sm font-semibold">
+                    Overall Feedback
+                  </h5>
+
+                  <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                    {evaluation.summary}
+                  </p>
+                </div>
+              )}
+
+              {Array.isArray(evaluation.strengths) &&
+                evaluation.strengths.length > 0 && (
+                  <div>
+                    <h5 className="flex items-center gap-2 text-sm font-semibold text-green-700">
+                      <CheckCircle2 size={17} />
+                      Strengths
+                    </h5>
+
+                    <ul className="mt-2 list-disc space-y-2 pl-5 text-sm text-slate-600">
+                      {evaluation.strengths.map(
+                        (item, index) => (
+                          <li key={index}>{item}</li>
+                        )
+                      )}
+                    </ul>
+                  </div>
+                )}
+
+              {Array.isArray(evaluation.issues) &&
+                evaluation.issues.length > 0 && (
+                  <div>
+                    <h5 className="flex items-center gap-2 text-sm font-semibold text-red-700">
+                      <AlertCircle size={17} />
+                      Issues Found
+                    </h5>
+
+                    <ul className="mt-2 list-disc space-y-2 pl-5 text-sm text-slate-600">
+                      {evaluation.issues.map(
+                        (item, index) => (
+                          <li key={index}>{item}</li>
+                        )
+                      )}
+                    </ul>
+                  </div>
+                )}
+
+              {Array.isArray(evaluation.improvements) &&
+                evaluation.improvements.length > 0 && (
+                  <div>
+                    <h5 className="flex items-center gap-2 text-sm font-semibold text-indigo-700">
+                      <Lightbulb size={17} />
+                      Suggested Improvements
+                    </h5>
+
+                    <ul className="mt-2 list-disc space-y-2 pl-5 text-sm text-slate-600">
+                      {evaluation.improvements.map(
+                        (item, index) => (
+                          <li key={index}>{item}</li>
+                        )
+                      )}
+                    </ul>
+                  </div>
+                )}
+            </div>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
+// Display one interview attempt with expandable questions.
+function InterviewAttemptCard({ interview, index }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const mode =
+    interview.mode === "resume"
+      ? "resume"
+      : "assignment";
+
+  const isResume = mode === "resume";
+
+  const answers = Array.isArray(interview.answers)
+    ? interview.answers
+    : [];
+
+  const Icon = isResume ? FileUser : Code2;
+
+  return (
+    <article className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <div className="p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex min-w-0 flex-1 items-start gap-3">
+            <div
+              className={`shrink-0 rounded-xl p-3 ${
+                isResume
+                  ? "bg-violet-50 text-violet-600"
+                  : "bg-indigo-50 text-indigo-600"
+              }`}
+            >
+              <Icon size={22} />
+            </div>
+
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-slate-500">
+                Attempt {index + 1}
+              </p>
+
+              <h4 className="mt-1 break-words font-semibold text-slate-900">
+                {interview.assessmentTitle ||
+                  "Software Engineering Interview"}
+              </h4>
+
+              <span
+                className={`mt-2 inline-block rounded-full px-3 py-1 text-xs font-semibold ${
+                  isResume
+                    ? "bg-violet-50 text-violet-700"
+                    : "bg-indigo-50 text-indigo-700"
+                }`}
+              >
+                {isResume
+                  ? "Resume-Based"
+                  : "Assignment-Based"}
+              </span>
+
+              {isResume && interview.targetRole && (
+                <p className="mt-2 flex items-center gap-2 text-xs text-slate-600">
+                  <BriefcaseBusiness size={14} />
+                  {interview.targetRole}
+                </p>
+              )}
+
+              <p className="mt-2 text-xs capitalize text-slate-500">
+                Interview type:{" "}
+                {interview.interviewType || "technical"}
+              </p>
+            </div>
+          </div>
+
+          <div className="text-right">
+            <p className="text-2xl font-bold text-indigo-600">
+              {safeScore(interview.averageScore)}%
+            </p>
+
+            <p className="mt-1 text-xs text-slate-500">
+              AI Average
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-5">
+          <ScoreBar score={interview.averageScore} />
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500">
+          <span className="flex items-center gap-2">
+            <MessageSquare size={15} />
+            {interview.questionsAnswered ?? answers.length}/
+            {interview.totalQuestions ?? 5} questions
+          </span>
+
+          <span className="flex items-center gap-2">
+            <CalendarDays size={15} />
+            {formatDate(interview.completedAt)}
+          </span>
+        </div>
+
+        <button
+          type="button"
+          onClick={() =>
+            setExpanded((previous) => !previous)
+          }
+          aria-expanded={expanded}
+          className="mt-5 flex w-full items-center justify-between border-t border-slate-100 pt-4 text-sm font-semibold text-indigo-700"
+        >
+          {expanded
+            ? "Hide Interview Report"
+            : "View Interview Report"}
+
+          {expanded ? (
+            <ChevronUp size={18} />
+          ) : (
+            <ChevronDown size={18} />
+          )}
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="space-y-4 border-t border-slate-100 bg-slate-50 p-5">
+          {answers.length === 0 ? (
+            <p className="text-sm text-slate-500">
+              No question-level feedback was saved
+              for this interview.
+            </p>
+          ) : (
+            answers.map((item, questionIndex) => (
+              <div
+                key={questionIndex}
+                className="rounded-xl border border-slate-200 bg-white p-5"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <p className="text-xs font-semibold text-indigo-700">
+                    Question {questionIndex + 1}
+                  </p>
+
+                  <span className="font-bold text-indigo-700">
+                    {safeScore(item.score)}%
+                  </span>
+                </div>
+
+                <h5 className="mt-3 text-sm font-semibold leading-6 text-slate-900">
+                  {item.question}
+                </h5>
+
+                <div className="mt-4">
+                  <ScoreBar score={item.score} />
+                </div>
+
+                {item.answer && (
+                  <div className="mt-4">
+                    <p className="text-xs font-semibold text-slate-700">
+                      Your Answer
+                    </p>
+
+                    <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                      {item.answer}
+                    </p>
+                  </div>
+                )}
+
+                {(item.feedback || item.guidance) && (
+                  <div className="mt-4">
+                    <p className="text-xs font-semibold text-indigo-700">
+                      Gemini Feedback
+                    </p>
+
+                    <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                      {item.feedback || item.guidance}
+                    </p>
+                  </div>
+                )}
+
+                {Array.isArray(item.strengths) &&
+                  item.strengths.length > 0 && (
+                    <div className="mt-4">
+                      <p className="flex items-center gap-2 text-xs font-semibold text-green-700">
+                        <CheckCircle2 size={15} />
+                        Strengths
+                      </p>
+
+                      <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-600">
+                        {item.strengths.map(
+                          (strength, itemIndex) => (
+                            <li key={itemIndex}>
+                              {strength}
+                            </li>
+                          )
+                        )}
+                      </ul>
+                    </div>
+                  )}
+
+                {Array.isArray(item.improvements) &&
+                  item.improvements.length > 0 && (
+                    <div className="mt-4">
+                      <p className="flex items-center gap-2 text-xs font-semibold text-indigo-700">
+                        <Lightbulb size={15} />
+                        Areas to Improve
+                      </p>
+
+                      <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-600">
+                        {item.improvements.map(
+                          (improvement, itemIndex) => (
+                            <li key={itemIndex}>
+                              {improvement}
+                            </li>
+                          )
+                        )}
+                      </ul>
+                    </div>
+                  )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
 
 export default function ProgressDashboard() {
-  const [results] = useState(() => getAssessmentResults());
-  const [interviewResult] = useState(() => getInterviewResult());
+  // Read stored results when the dashboard mounts.
+  const [assessmentResults] = useState(
+    () => getAssessmentResults()
+  );
 
-  const attempts = Object.values(results);
+  const [interviewHistory] = useState(
+    () => getInterviewHistory()
+  );
 
-  const completed = attempts.filter(
+  const [activeFilter, setActiveFilter] =
+    useState("all");
+
+  const attempts = Object.values(assessmentResults)
+    .filter((item) => item && typeof item === "object")
+    .sort(
+      (a, b) =>
+        new Date(b.completedAt || 0).getTime() -
+        new Date(a.completedAt || 0).getTime()
+    );
+
+  const completedAssessments = attempts.filter(
     (item) => item.completed
   ).length;
 
-  const averageScore = attempts.length
+  const averageCodingScore = attempts.length
     ? Math.round(
         attempts.reduce(
-          (sum, item) => sum + item.score,
+          (sum, item) => sum + safeScore(item.score),
           0
         ) / attempts.length
       )
     : 0;
 
-  const formatDate = (date) => {
-    if (!date) return "Date unavailable";
+  const interviews = Array.isArray(interviewHistory)
+    ? [...interviewHistory].sort(
+        (a, b) =>
+          new Date(b.completedAt || 0).getTime() -
+          new Date(a.completedAt || 0).getTime()
+      )
+    : [];
 
-    const parsed = new Date(date);
+  const assignmentInterviews = interviews.filter(
+    (item) => item.mode !== "resume"
+  );
 
-    return Number.isNaN(parsed.getTime())
-      ? "Date unavailable"
-      : parsed.toLocaleString();
-  };
+  const resumeInterviews = interviews.filter(
+    (item) => item.mode === "resume"
+  );
+
+  const completedInterviews = interviews.filter(
+    (item) => item.completed
+  ).length;
+
+  const averageInterviewScore = interviews.length
+    ? Math.round(
+        interviews.reduce(
+          (sum, item) =>
+            sum + safeScore(item.averageScore),
+          0
+        ) / interviews.length
+      )
+    : 0;
+
+  const bestInterviewScore = interviews.length
+    ? Math.max(
+        ...interviews.map(
+          (item) => safeScore(item.averageScore)
+        )
+      )
+    : 0;
+
+  const filteredInterviews = interviews.filter(
+    (item) =>
+      activeFilter === "all" ||
+      (activeFilter === "resume" &&
+        item.mode === "resume") ||
+      (activeFilter === "assignment" &&
+        item.mode !== "resume")
+  );
 
   return (
     <div className="space-y-8">
@@ -55,261 +578,290 @@ export default function ProgressDashboard() {
           Developer Readiness Report
         </h2>
 
-        <p className="mt-3 text-slate-600">
-          Review your coding assessments and technical interview
-          performance in one place.
+        <p className="mt-3 text-sm leading-6 text-slate-600">
+          Track your coding assessments, assignment-based
+          interviews, and resume-based interviews in one place.
         </p>
       </div>
 
       {/* SUMMARY CARDS */}
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          label="Coding Assessments Completed"
+          value={completedAssessments}
+          Icon={Code2}
+        />
 
-        {[
-          ["Coding Results Recorded", attempts.length, Code2],
-          ["Challenges Completed", completed, CheckCircle2],
-          ["Average Coding Score", `${averageScore}%`, Target],
-        ].map(([label, value, Icon]) => (
+        <StatCard
+          label="Interview Attempts"
+          value={interviews.length}
+          Icon={Mic}
+        />
 
-          <div
-            key={label}
-            className="rounded-2xl border border-slate-200 bg-white p-6"
-          >
-            <Icon
-              size={23}
-              className="text-indigo-600"
-            />
+        <StatCard
+          label="Average Interview Score"
+          value={`${averageInterviewScore}%`}
+          Icon={Target}
+        />
 
-            <p className="mt-4 text-3xl font-bold">
-              {value}
-            </p>
-
-            <p className="mt-2 text-sm text-slate-500">
-              {label}
-            </p>
-          </div>
-
-        ))}
-
+        <StatCard
+          label="Best Interview Score"
+          value={`${bestInterviewScore}%`}
+          Icon={Trophy}
+        />
       </div>
 
       {/* CODING ASSESSMENT PERFORMANCE */}
       <section className="rounded-2xl border border-slate-200 bg-white p-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <Code2 className="text-indigo-600" />
 
-        <div className="flex items-center gap-3">
-          <Trophy className="text-indigo-600" />
+            <h3 className="text-xl font-semibold">
+              Coding Assessment Performance
+            </h3>
+          </div>
 
-          <h3 className="text-xl font-semibold">
-            Coding Assessment Performance
-          </h3>
+          <span className="text-sm text-slate-500">
+            {attempts.length} recorded
+          </span>
         </div>
 
         {attempts.length === 0 ? (
-
-          <p className="mt-6 text-sm text-slate-500">
-            No coding assessments recorded yet.
-            Complete your first challenge to see your results.
-          </p>
-
-        ) : (
-
-          <div className="mt-6 space-y-6">
-
-            {attempts.map((attempt) => (
-
-              <div key={attempt.assessmentId}>
-
-                <div className="flex items-center justify-between gap-3">
-
-                  <div>
-                    <p className="font-semibold">
-                      {attempt.title}
-                    </p>
-
-                    <p className="mt-1 text-xs text-slate-500">
-                      {attempt.evaluationType === "ai-static-review"
-  ? "AI static code evaluation"
-  : `${attempt.passed}/${attempt.total} source checks passed`}
-                    </p>
-                  </div>
-
-                  <span className="font-bold text-indigo-600">
-                    {attempt.score}%
-                  </span>
-
-                </div>
-
-                {/* CODING PROGRESS BAR */}
-                <div className="mt-3 h-3 overflow-hidden rounded-full bg-slate-100">
-                  <div
-                    className="h-full rounded-full bg-indigo-600"
-                    style={{
-                      width: `${Math.min(100, Math.max(0, attempt.score))}%`,
-                    }}
-                  />
-                </div>
-
-                <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
-                  <CalendarDays size={14} />
-                  {formatDate(attempt.completedAt)}
-                </div>
-
-              </div>
-
-            ))}
-
-          </div>
-
-        )}
-
-        <p className="mt-5 text-xs leading-5 text-slate-500">
-          Coding percentages currently represent source-pattern checks,
-          not actual Java compilation or execution-based testing.
-        </p>
-
-      </section>
-
-      {/* INTERVIEW PERFORMANCE */}
-      <section className="rounded-2xl border border-slate-200 bg-white p-6">
-
-        <div className="flex items-center gap-3">
-          <Mic className="text-indigo-600" />
-
-          <h3 className="text-xl font-semibold">
-            Technical Interview Performance
-          </h3>
-        </div>
-
-        {!interviewResult ? (
-
           <div className="mt-6 rounded-xl bg-slate-50 p-5">
             <p className="text-sm text-slate-600">
-              No completed interview recorded yet.
-              Answer all three technical questions to generate
-              your interview report.
+              No coding assessments recorded yet.
+              Complete your first challenge to see your results.
             </p>
           </div>
-
         ) : (
-
-          <div className="mt-6 space-y-6">
-
-            {/* INTERVIEW STATISTICS */}
-            <div className="grid gap-4 sm:grid-cols-2">
-
+          <>
+            <div className="mt-6 grid gap-4 sm:grid-cols-2">
               <div className="rounded-xl bg-indigo-50 p-5">
                 <Target
-                  size={22}
+                  size={21}
                   className="text-indigo-600"
                 />
 
                 <p className="mt-3 text-sm text-indigo-800">
-                  Average Topic Coverage
+                  Average Coding Score
                 </p>
 
                 <p className="mt-2 text-3xl font-bold text-indigo-700">
-                  {interviewResult.averageScore}%
+                  {averageCodingScore}%
                 </p>
               </div>
 
-              <div className="rounded-xl bg-slate-50 p-5">
-                <MessageSquare
-                  size={22}
-                  className="text-slate-600"
+              <div className="rounded-xl bg-green-50 p-5">
+                <CheckCircle2
+                  size={21}
+                  className="text-green-600"
                 />
 
-                <p className="mt-3 text-sm text-slate-600">
-                  Questions Answered
+                <p className="mt-3 text-sm text-green-800">
+                  Completed Challenges
                 </p>
 
-                <p className="mt-2 text-3xl font-bold">
-                  {interviewResult.questionsAnswered}/
-                  {interviewResult.totalQuestions}
+                <p className="mt-2 text-3xl font-bold text-green-700">
+                  {completedAssessments}
                 </p>
               </div>
-
             </div>
 
-            {/* INDIVIDUAL INTERVIEW QUESTIONS */}
-            <div className="space-y-4">
-
-              {(interviewResult.answers || []).map(
-                (item, index) => (
-
-                  <div
-                    key={index}
-                    className="rounded-xl border border-slate-200 p-4"
-                  >
-
-                    <div className="flex items-start justify-between gap-3">
-
-                      <div>
-                        <p className="text-xs font-medium text-slate-500">
-                          Question {index + 1}
-                        </p>
-
-                        <p className="mt-2 text-sm font-semibold">
-                          {item.question}
-                        </p>
-                      </div>
-
-                      <span className="font-bold text-indigo-600">
-                        {item.score}%
-                      </span>
-
-                    </div>
-
-                    {/* QUESTION SCORE BAR */}
-                    <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-100">
-                      <div
-                        className="h-full rounded-full bg-indigo-600"
-                        style={{
-                          width: `${Math.min(100, Math.max(0, item.score))}%`,
-                        }}
-                      />
-                    </div>
-
-                  </div>
-
-                )
-              )}
-
+            <div className="mt-6 space-y-4">
+              {attempts.map((attempt) => (
+                <AssessmentResultCard
+                  key={attempt.assessmentId}
+                  attempt={attempt}
+                />
+              ))}
             </div>
-
-            {/* SAVED DATE */}
-            <div className="flex items-center gap-2 text-xs text-slate-500">
-              <CalendarDays size={15} />
-              Last completed:{" "}
-              {formatDate(interviewResult.completedAt)}
-            </div>
-
-            <p className="text-xs leading-5 text-slate-500">
-              Interview results measure predefined keyword coverage.
-              They do not independently verify English fluency,
-              technical accuracy, or communication confidence.
-            </p>
-
-          </div>
-
+          </>
         )}
 
+        <p className="mt-5 text-xs leading-5 text-slate-500">
+          Coding scores are based on Gemini AI static
+          evaluation or predefined source-pattern checks.
+          These results do not represent actual code
+          compilation, runtime execution, or automated tests.
+        </p>
       </section>
 
-      {/* RECOMMENDATION SECTION */}
-      <div className="rounded-2xl bg-indigo-50 p-6">
+      {/* INTERVIEW PERFORMANCE */}
+      <section className="rounded-2xl border border-slate-200 bg-white p-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <Mic className="text-indigo-600" />
 
-        <h3 className="font-semibold text-indigo-900">
-          Your Next Step
-        </h3>
+            <h3 className="text-xl font-semibold">
+              AI Interview Performance
+            </h3>
+          </div>
 
-        <p className="mt-2 text-sm leading-6 text-indigo-800">
-          Continue practicing debugging, API testing,
-          and explaining technical decisions.
-          Future versions will include more advanced code
-          evaluation and contextual interview feedback.
+          <span className="text-sm text-slate-500">
+            {completedInterviews} completed
+          </span>
+        </div>
+
+        {/* INTERVIEW STATISTICS */}
+        <div className="mt-6 grid gap-4 sm:grid-cols-3">
+          <div className="rounded-xl bg-indigo-50 p-5">
+            <History
+              size={22}
+              className="text-indigo-600"
+            />
+
+            <p className="mt-3 text-sm text-indigo-800">
+              Total Attempts
+            </p>
+
+            <p className="mt-2 text-3xl font-bold text-indigo-700">
+              {interviews.length}
+            </p>
+          </div>
+
+          <div className="rounded-xl bg-violet-50 p-5">
+            <FileUser
+              size={22}
+              className="text-violet-600"
+            />
+
+            <p className="mt-3 text-sm text-violet-800">
+              Resume Interviews
+            </p>
+
+            <p className="mt-2 text-3xl font-bold text-violet-700">
+              {resumeInterviews.length}
+            </p>
+          </div>
+
+          <div className="rounded-xl bg-slate-50 p-5">
+            <BriefcaseBusiness
+              size={22}
+              className="text-slate-600"
+            />
+
+            <p className="mt-3 text-sm text-slate-600">
+              Assignment Interviews
+            </p>
+
+            <p className="mt-2 text-3xl font-bold text-slate-900">
+              {assignmentInterviews.length}
+            </p>
+          </div>
+        </div>
+
+        {/* INTERVIEW HISTORY FILTERS */}
+        <div className="mt-8">
+          <div className="flex flex-wrap items-center gap-2">
+            <MessageSquare
+              size={20}
+              className="text-indigo-600"
+            />
+
+            <h4 className="text-lg font-semibold">
+              Interview History
+            </h4>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            {[
+              {
+                value: "all",
+                label: "All Interviews",
+              },
+              {
+                value: "assignment",
+                label: "Assignment-Based",
+              },
+              {
+                value: "resume",
+                label: "Resume-Based",
+              },
+            ].map((filter) => (
+              <button
+                key={filter.value}
+                type="button"
+                onClick={() =>
+                  setActiveFilter(filter.value)
+                }
+                aria-pressed={
+                  activeFilter === filter.value
+                }
+                className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                  activeFilter === filter.value
+                    ? "bg-indigo-600 text-white"
+                    : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+
+          {/* INTERVIEW ATTEMPTS */}
+          {filteredInterviews.length === 0 ? (
+            <div className="mt-6 rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6">
+              <p className="text-sm text-slate-600">
+                {interviews.length === 0
+                  ? "No completed interview attempts recorded yet. Finish an AI interview to see your report here."
+                  : "No interviews found for this filter."}
+              </p>
+            </div>
+          ) : (
+            <div className="mt-6 space-y-4">
+              {filteredInterviews.map(
+                (interview, index) => (
+                  <InterviewAttemptCard
+                    key={
+                      interview.id ||
+                      `${interview.completedAt}-${index}`
+                    }
+                    interview={interview}
+                    index={index}
+                  />
+                )
+              )}
+            </div>
+          )}
+        </div>
+
+        <p className="mt-6 text-xs leading-5 text-slate-500">
+          Interview scores are subjective Gemini AI estimates
+          based on the answers provided. They are not verified
+          measures of professional readiness, English fluency,
+          or actual interview success.
         </p>
+      </section>
 
-      </div>
+      {/* NEXT STEP */}
+      <section className="rounded-2xl bg-indigo-50 p-6">
+        <div className="flex items-center gap-2">
+          <TrendingUp
+            size={21}
+            className="text-indigo-700"
+          />
 
+          <h3 className="font-semibold text-indigo-900">
+            Your Next Step
+          </h3>
+        </div>
+
+        <p className="mt-3 text-sm leading-6 text-indigo-800">
+          Review your interview feedback, identify recurring
+          weaknesses, and practice another assessment or
+          resume-based interview. Compare your results over
+          time to see how your explanations and technical
+          reasoning improve.
+        </p>
+      </section>
+
+      <p className="text-xs leading-5 text-slate-500">
+        Progress is currently stored in this browser.
+        It will not automatically sync across devices.
+        Account-based progress tracking will be introduced
+        when authentication and database storage are added.
+      </p>
     </div>
   );
 }

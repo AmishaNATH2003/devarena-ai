@@ -168,13 +168,14 @@ export default function App() {
 
   // Sidebar navigation.
   const choosePage = (page) => {
-    refreshProgress();
-    setActivePage(page);
-    setSidebarOpen(false);
+  refreshProgress();
+  setActivePage(page);
+  setSidebarOpen(false);
 
-    // Preserve selectedAssessment so users can
-    // return to the same project without generating again.
-  };
+  if (page === "Interview Practice") {
+    setInterviewAssessment(null);
+  }
+};
 
   // Open a predefined or AI-generated assessment.
   const openAssessment = (assessment) => {

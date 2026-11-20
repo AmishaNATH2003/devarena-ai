@@ -10,13 +10,52 @@ import {
   AlertCircle,
   Sparkles,
   Loader2,
+  Code2,
+  FileUser,
+  ArrowLeft,
+  Upload,
+  BriefcaseBusiness,
+  FileText,
 } from "lucide-react";
 
 import { saveInterviewResult } from "../utils/interviewStorage";
+import { getAssessmentSession } from "../utils/assessmentSession";
+import { getAssessmentResults } from "../utils/progressStorage";
+import { parseResume } from "../utils/resumeParser";
+import { challenges } from "../data/challenges";
 
 const MAX_QUESTIONS = 5;
 
-// Send interview requests to Gemini.
+const JOB_ROLES = [
+  "Software Engineer",
+  "Java Backend Developer",
+  "Frontend Developer",
+  "Full Stack Developer",
+  "Python Developer",
+  "Data Analyst",
+  "Machine Learning Engineer",
+  "Other",
+];
+
+const INTERVIEW_TYPES = [
+  {
+    value: "technical",
+    label: "Technical",
+    description: "Skills, concepts and projects",
+  },
+  {
+    value: "hr",
+    label: "HR",
+    description: "Behavioral and workplace questions",
+  },
+  {
+    value: "mixed",
+    label: "Mixed",
+    description: "Technical and HR questions",
+  },
+];
+
+// Existing Gemini interview API.
 async function interviewRequest(payload) {
   const response = await fetch("/api/interview", {
     method: "POST",
@@ -30,28 +69,141 @@ async function interviewRequest(payload) {
 
   if (!response.ok) {
     throw new Error(
-      data.error ||
-        "The AI interview service is unavailable."
+      data.error || "The AI interview service is unavailable."
     );
   }
 
   return data;
 }
 
+// Load latest saved source code for an assignment.
+function contextForSavedAssessment(item) {
+  if (!item) return null;
+
+  const challenge =
+    item.generatedChallenge || challenges[item.id];
+
+  if (!challenge) return null;
+
+  const files = { ...(challenge.files || {}) };
+
+  try {
+    const savedDraft = localStorage.getItem(
+      `devarena-draft-${item.id}`
+    );
+
+    if (savedDraft) {
+      const parsed = JSON.parse(savedDraft);
+
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed)
+      ) {
+        for (const [filename, code] of Object.entries(parsed)) {
+          if (
+            typeof code === "string" &&
+            Object.hasOwn(files, filename)
+          ) {
+            files[filename] = code;
+          }
+        }
+      }
+    }
+  } catch {
+    // Continue using original files.
+  }
+
+  return {
+    mode: "assignment",
+    title: item.title,
+    description: [
+      challenge.description || "",
+      ...(challenge.instructions || []),
+    ].join("\n"),
+    codeSummary: Object.entries(files)
+      .map(
+        ([filename, code]) =>
+          `File: ${filename}\n${code}`
+      )
+      .join("\n\n")
+      .slice(0, 10000),
+  };
+}
+
+// Find assignments available for an interview.
+function availableAssessments() {
+  const saved = getAssessmentSession();
+  const progress = getAssessmentResults();
+  const entries = [];
+
+  if (
+    saved?.id &&
+    (saved.generatedChallenge || challenges[saved.id])
+  ) {
+    entries.push(saved);
+  }
+
+  for (const [id, result] of Object.entries(progress)) {
+    if (!result?.title || !challenges[id]) continue;
+
+    const exists = entries.some(
+      (item) => String(item.id) === String(id)
+    );
+
+    if (!exists) {
+      entries.push({
+        id,
+        title: result.title,
+      });
+    }
+  }
+
+  return entries;
+}
+
 export default function InterviewPractice({
   assessment = null,
 }) {
-  const [currentQuestion, setCurrentQuestion] = useState("");
+  // Assignment button opens assignment mode directly.
+  // Sidebar navigation opens the two-mode selector.
+  const [mode, setMode] = useState(
+    assessment ? "assignment" : null
+  );
+
+  const [chosenContext, setChosenContext] =
+    useState(assessment);
+
+  const [savedAssignments] = useState(availableAssessments);
+  const [chosenId, setChosenId] = useState("");
+
+  // Resume-specific state.
+  const [resumeText, setResumeText] = useState("");
+  const [resumeFileName, setResumeFileName] = useState("");
+  const [parsingResume, setParsingResume] = useState(false);
+
+  const [selectedRole, setSelectedRole] = useState(
+    "Software Engineer"
+  );
+  const [customRole, setCustomRole] = useState("");
+  const [interviewType, setInterviewType] =
+    useState("technical");
+
+  // Interview state.
+  const [currentQuestion, setCurrentQuestion] =
+    useState("");
   const [questionIndex, setQuestionIndex] = useState(0);
   const [answer, setAnswer] = useState("");
   const [listening, setListening] = useState(false);
 
   const [feedback, setFeedback] = useState(null);
   const [history, setHistory] = useState([]);
-  const [nextQuestionText, setNextQuestionText] = useState(null);
+  const [nextQuestionText, setNextQuestionText] =
+    useState(null);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [finished, setFinished] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -59,18 +211,19 @@ export default function InterviewPractice({
   const transcriptRef = useRef("");
   const requestIdRef = useRef(0);
 
-  // Current project context.
-  const interviewContext = {
-    title:
-      assessment?.title ||
-      "Software Engineering Interview",
-    description:
-      assessment?.description ||
-      "General software engineering debugging, problem solving, testing, and development practices.",
-    codeSummary: assessment?.codeSummary || "",
+  const targetRole =
+    selectedRole === "Other"
+      ? customRole.trim()
+      : selectedRole;
+
+  const interviewContext = chosenContext || {
+    mode: "assignment",
+    title: "Software Engineering Interview",
+    description: "General software engineering practice.",
+    codeSummary: "",
   };
 
-  // Cleanup when leaving the interview page.
+  // Stop microphone and ignore pending requests on unmount.
   useEffect(() => {
     return () => {
       requestIdRef.current += 1;
@@ -78,16 +231,12 @@ export default function InterviewPractice({
     };
   }, []);
 
-  // Stop microphone.
   const stopListening = () => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-    }
-
+    recognitionRef.current?.stop();
     setListening(false);
   };
 
-  // Start speech recognition.
+  // Speech-to-text.
   const startListening = () => {
     const SpeechRecognition =
       window.SpeechRecognition ||
@@ -152,14 +301,97 @@ export default function InterviewPractice({
       recognition.start();
       setListening(true);
     } catch {
-      setError("Unable to start speech recognition.");
       setListening(false);
+      setError("Unable to start speech recognition.");
     }
   };
 
-  // Start a new Gemini interview.
+  // Pick a saved coding assignment.
+  const chooseSavedAssignment = (id) => {
+    setChosenId(id);
+
+    const item = savedAssignments.find(
+      (entry) => String(entry.id) === id
+    );
+
+    setChosenContext(contextForSavedAssessment(item));
+    setError("");
+  };
+
+  // Return to interview mode selection.
+  const returnToModes = () => {
+    if (loading || currentQuestion) return;
+
+    setMode(null);
+    setChosenContext(null);
+    setChosenId("");
+    setError("");
+    setNotice("");
+  };
+
+  // Extract resume locally using resumeParser.js.
+  const handleResumeUpload = async (event) => {
+    const file = event.target.files?.[0];
+
+    if (!file) return;
+
+    setError("");
+    setNotice("");
+    setResumeText("");
+    setResumeFileName("");
+    setChosenContext(null);
+    setParsingResume(true);
+
+    try {
+      const result = await parseResume(file);
+
+      setResumeText(result.text);
+      setResumeFileName(result.fileName);
+
+      if (result.truncated) {
+        setNotice(
+          "Resume extracted successfully. Only the first 12,000 characters will be used."
+        );
+      }
+    } catch (err) {
+      setError(
+        err.message || "Unable to read the selected resume."
+      );
+    } finally {
+      setParsingResume(false);
+      event.target.value = "";
+    }
+  };
+
+  // Build the resume interview context for Gemini.
+  const prepareResumeInterview = () => {
+    if (
+      resumeText.trim().length < 50 ||
+      !targetRole.trim()
+    ) {
+      setError(
+        "Please upload a readable resume and choose your target job role."
+      );
+      return;
+    }
+
+    setChosenContext({
+      mode: "resume",
+      title: `${targetRole.trim()} Resume Interview`,
+      description:
+        `${interviewType} interview for ${targetRole.trim()}`,
+      targetRole: targetRole.trim().slice(0, 120),
+      interviewType,
+      resumeText,
+      codeSummary: "",
+    });
+
+    setError("");
+  };
+
+  // Start assignment or resume interview.
   const startInterview = async () => {
-    if (loading) return;
+    if (loading || parsingResume || !chosenContext) return;
 
     stopListening();
 
@@ -185,9 +417,7 @@ export default function InterviewPractice({
         assessment: interviewContext,
       });
 
-      if (requestId !== requestIdRef.current) {
-        return;
-      }
+      if (requestId !== requestIdRef.current) return;
 
       if (
         typeof data.question !== "string" ||
@@ -212,7 +442,7 @@ export default function InterviewPractice({
     }
   };
 
-  // Submit the current answer to Gemini.
+  // Submit answer for Gemini evaluation.
   const submitAnswer = async () => {
     if (
       loading ||
@@ -224,9 +454,7 @@ export default function InterviewPractice({
     }
 
     if (!answer.trim()) {
-      setError(
-        "Please speak or type an answer first."
-      );
+      setError("Please speak or type an answer first.");
       return;
     }
 
@@ -249,9 +477,7 @@ export default function InterviewPractice({
         })),
       });
 
-      if (requestId !== requestIdRef.current) {
-        return;
-      }
+      if (requestId !== requestIdRef.current) return;
 
       if (
         !Number.isInteger(data.score) ||
@@ -292,12 +518,20 @@ export default function InterviewPractice({
         setNextQuestionText(null);
 
         try {
+          // Save interview metadata and answers only.
+          // Never save full resume text in progress storage.
           saveInterviewResult(
             updatedHistory,
-            interviewContext,
-            updatedHistory.length >= MAX_QUESTIONS
-              ? MAX_QUESTIONS
-              : updatedHistory.length
+            {
+              title: interviewContext.title,
+              mode: interviewContext.mode || "assignment",
+              targetRole:
+                interviewContext.targetRole || "",
+              interviewType:
+                interviewContext.interviewType ||
+                "technical",
+            },
+            updatedHistory.length
           );
 
           setSaved(true);
@@ -323,11 +557,9 @@ export default function InterviewPractice({
     }
   };
 
-  // Continue with the adaptive follow-up question.
+  // Continue to Gemini's adaptive follow-up question.
   const nextQuestion = () => {
-    if (!nextQuestionText || loading) {
-      return;
-    }
+    if (!nextQuestionText || loading) return;
 
     stopListening();
 
@@ -341,7 +573,7 @@ export default function InterviewPractice({
     transcriptRef.current = "";
   };
 
-  // Restart the entire interview.
+  // Restart without losing the selected interview mode.
   const restart = () => {
     requestIdRef.current += 1;
     stopListening();
@@ -360,7 +592,6 @@ export default function InterviewPractice({
     transcriptRef.current = "";
   };
 
-  // Calculate AI-estimated average score.
   const averageScore = history.length
     ? Math.round(
         history.reduce(
@@ -372,74 +603,459 @@ export default function InterviewPractice({
 
   return (
     <div className="space-y-6">
+
       {/* PAGE HEADER */}
       <div>
         <p className="flex items-center gap-2 text-sm font-semibold text-indigo-600">
           <Sparkles size={17} />
-          GEMINI AI TECHNICAL INTERVIEW
+          GEMINI AI INTERVIEW PRACTICE
         </p>
 
         <h2 className="mt-2 text-3xl font-bold">
-          Practice explaining your code
+          Practice real-world interviews
         </h2>
 
         <p className="mt-3 text-slate-600">
-          Answer technical questions using your voice or
-          keyboard. Gemini evaluates your explanation and
-          generates adaptive follow-up questions.
+          Practice interviews based on your coding assignments
+          or resume. Answer using your voice or keyboard.
         </p>
       </div>
 
-      {/* START INTERVIEW */}
-      {!currentQuestion && (
+      {/* MODE SELECTION */}
+      {!currentQuestion && !mode && (
+        <div className="grid gap-5 md:grid-cols-2">
+
+          <button
+            type="button"
+            onClick={() => {
+              setMode("assignment");
+              setChosenContext(null);
+              setError("");
+            }}
+            className="rounded-2xl border border-slate-200 bg-white p-6 text-left shadow-sm transition hover:border-indigo-400 hover:shadow-md"
+          >
+            <div className="mb-5 inline-flex rounded-xl bg-indigo-50 p-3 text-indigo-600">
+              <Code2 size={26} />
+            </div>
+
+            <h3 className="text-xl font-bold">
+              Assignment-Based Interview
+            </h3>
+
+            <p className="mt-3 text-sm leading-6 text-slate-600">
+              Explain your code, debugging decisions,
+              testing approach and technical solutions.
+            </p>
+
+            <p className="mt-5 font-semibold text-indigo-700">
+              Select an assignment →
+            </p>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setMode("resume");
+              setChosenContext(null);
+              setError("");
+            }}
+            className="rounded-2xl border border-slate-200 bg-white p-6 text-left shadow-sm transition hover:border-violet-400 hover:shadow-md"
+          >
+            <div className="mb-5 inline-flex rounded-xl bg-violet-50 p-3 text-violet-600">
+              <FileUser size={26} />
+            </div>
+
+            <h3 className="text-xl font-bold">
+              Resume-Based Interview
+            </h3>
+
+            <p className="mt-3 text-sm leading-6 text-slate-600">
+              Upload your resume and practice role-specific
+              technical, HR, or mixed interviews.
+            </p>
+
+            <p className="mt-5 font-semibold text-violet-700">
+              Upload resume →
+            </p>
+          </button>
+        </div>
+      )}
+
+      {/* ASSIGNMENT MODE */}
+      {!currentQuestion && mode === "assignment" && (
         <section className="rounded-2xl border border-slate-200 bg-white p-6">
+
+          <button
+            type="button"
+            onClick={returnToModes}
+            disabled={loading}
+            className="mb-5 flex items-center gap-2 text-sm text-indigo-700 disabled:opacity-50"
+          >
+            <ArrowLeft size={16} />
+            Change interview mode
+          </button>
+
+          <h3 className="text-xl font-bold">
+            Assignment-Based Interview
+          </h3>
+
+          <p className="mt-2 text-sm text-slate-600">
+            Select a saved project to practice explaining
+            your implementation to an AI interviewer.
+          </p>
+
+          {assessment &&
+            chosenContext === assessment && (
+              <div className="mt-5 rounded-xl bg-indigo-50 p-4">
+                <p className="text-sm font-medium text-indigo-700">
+                  Current project: {assessment.title}
+                </p>
+              </div>
+            )}
+
+          {savedAssignments.length > 0 && (
+            <div className="mt-5">
+              <label
+                htmlFor="interview-assignment"
+                className="mb-2 block text-sm font-semibold"
+              >
+                Select Assignment
+              </label>
+
+              <select
+                id="interview-assignment"
+                value={chosenId}
+                disabled={loading}
+                onChange={(event) =>
+                  chooseSavedAssignment(event.target.value)
+                }
+                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm"
+              >
+                <option value="">
+                  Choose a saved assignment
+                </option>
+
+                {savedAssignments.map((item) => (
+                  <option
+                    key={item.id}
+                    value={String(item.id)}
+                  >
+                    {item.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {!chosenContext && (
+            <p className="mt-4 text-sm text-amber-700">
+              {savedAssignments.length
+                ? "Select an assignment to begin."
+                : "No saved assignments found. Complete an assessment first."}
+            </p>
+          )}
+
+          {chosenContext && (
+            <div className="mt-6 rounded-xl border border-indigo-200 bg-indigo-50 p-5">
+              <h4 className="font-semibold text-indigo-900">
+                Ready for your interview
+              </h4>
+
+              <p className="mt-2 text-sm text-indigo-700">
+                {chosenContext.title}
+              </p>
+
+              <p className="mt-1 text-sm text-indigo-700">
+                Up to {MAX_QUESTIONS} adaptive questions
+              </p>
+
+              <button
+                type="button"
+                onClick={startInterview}
+                disabled={loading}
+                className="mt-5 flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+              >
+                {loading ? (
+                  <>
+                    <Loader2
+                      size={18}
+                      className="animate-spin"
+                    />
+                    Preparing interview...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={18} />
+                    Start AI Interview
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* RESUME MODE */}
+      {!currentQuestion && mode === "resume" && (
+        <section className="rounded-2xl border border-slate-200 bg-white p-6">
+
+          <button
+            type="button"
+            onClick={returnToModes}
+            disabled={loading || parsingResume}
+            className="mb-5 flex items-center gap-2 text-sm text-indigo-700 disabled:opacity-50"
+          >
+            <ArrowLeft size={16} />
+            Change interview mode
+          </button>
+
           <div className="mb-5 flex items-center gap-3">
-            <div className="rounded-xl bg-indigo-50 p-3 text-indigo-600">
-              <MessageSquare size={24} />
+            <div className="rounded-xl bg-violet-50 p-3 text-violet-600">
+              <FileUser size={26} />
             </div>
 
             <div>
-              <h3 className="font-semibold">
-                AI Mock Interview
+              <h3 className="text-xl font-bold">
+                Resume-Based AI Interview
               </h3>
 
-              <p className="text-sm text-slate-500">
-                Up to {MAX_QUESTIONS} adaptive technical questions
+              <p className="mt-1 text-sm text-slate-500">
+                Personalized with Gemini AI
               </p>
             </div>
           </div>
 
-          <p className="mb-5 text-sm text-slate-600">
-            Interview topic: {interviewContext.title}
-          </p>
+          <div className="space-y-6">
 
-          <button
-            type="button"
-            onClick={startInterview}
-            disabled={loading}
-            className="flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white disabled:opacity-60"
-          >
-            {loading ? (
-              <>
-                <Loader2
-                  size={18}
-                  className="animate-spin"
+            {/* UPLOAD RESUME */}
+            <div>
+              <label
+                htmlFor="resume-upload"
+                className="mb-2 block text-sm font-semibold"
+              >
+                Upload your resume
+              </label>
+
+              <div className="rounded-xl border-2 border-dashed border-slate-200 bg-slate-50 p-6 text-center">
+                <Upload
+                  size={28}
+                  className="mx-auto text-indigo-600"
                 />
-                Preparing interview...
-              </>
-            ) : (
-              <>
+
+                <p className="mt-3 text-sm font-medium">
+                  Select a PDF or DOCX resume
+                </p>
+
+                <p className="mt-1 text-xs text-slate-500">
+                  Maximum 5 MB. Text-based files only.
+                </p>
+
+                <input
+                  id="resume-upload"
+                  type="file"
+                  accept=".pdf,.docx"
+                  onChange={handleResumeUpload}
+                  disabled={parsingResume || loading}
+                  className="mt-4 block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-indigo-100 file:px-4 file:py-2 file:font-semibold file:text-indigo-700"
+                />
+              </div>
+
+              {parsingResume && (
+                <p className="mt-3 flex items-center gap-2 text-sm text-indigo-700">
+                  <Loader2
+                    size={16}
+                    className="animate-spin"
+                  />
+                  Extracting resume text...
+                </p>
+              )}
+
+              {resumeFileName && !parsingResume && (
+                <p className="mt-3 flex items-center gap-2 rounded-lg bg-green-50 p-3 text-sm text-green-700">
+                  <CheckCircle2 size={18} />
+                  Resume extracted: {resumeFileName}
+                </p>
+              )}
+            </div>
+
+            {/* TARGET JOB ROLE */}
+            <div>
+              <label
+                htmlFor="target-role"
+                className="mb-2 block text-sm font-semibold"
+              >
+                Target job role
+              </label>
+
+              <div className="relative">
+                <BriefcaseBusiness
+                  size={18}
+                  className="absolute left-3 top-3 text-slate-400"
+                />
+
+                <select
+                  id="target-role"
+                  value={selectedRole}
+                  onChange={(event) => {
+                    setSelectedRole(event.target.value);
+                    setChosenContext(null);
+                  }}
+                  className="w-full appearance-none rounded-xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-sm"
+                >
+                  {JOB_ROLES.map((role) => (
+                    <option key={role} value={role}>
+                      {role}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {selectedRole === "Other" && (
+                <input
+                  type="text"
+                  value={customRole}
+                  maxLength={120}
+                  onChange={(event) => {
+                    setCustomRole(event.target.value);
+                    setChosenContext(null);
+                  }}
+                  placeholder="Enter your target job role"
+                  className="mt-3 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-indigo-500"
+                />
+              )}
+            </div>
+
+            {/* INTERVIEW TYPE */}
+            <fieldset>
+              <legend className="mb-3 text-sm font-semibold">
+                Interview Type
+              </legend>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                {INTERVIEW_TYPES.map((option) => (
+                  <label
+                    key={option.value}
+                    className={`cursor-pointer rounded-xl border p-4 ${
+                      interviewType === option.value
+                        ? "border-indigo-500 bg-indigo-50"
+                        : "border-slate-200 bg-white"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="interview-type"
+                      value={option.value}
+                      checked={
+                        interviewType === option.value
+                      }
+                      onChange={() => {
+                        setInterviewType(option.value);
+                        setChosenContext(null);
+                      }}
+                      className="accent-indigo-600"
+                    />
+
+                    <span className="ml-2 text-sm font-semibold">
+                      {option.label}
+                    </span>
+
+                    <p className="mt-2 text-xs text-slate-500">
+                      {option.description}
+                    </p>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+
+            {/* PRIVACY NOTICE */}
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-start gap-3">
+                <FileText
+                  size={20}
+                  className="shrink-0 text-slate-500"
+                />
+
+                <p className="text-xs leading-5 text-slate-600">
+                  Your resume is parsed in this browser.
+                  Starting an interview sends its extracted
+                  text to the DevArena AI API and Google Gemini
+                  for personalized questions. The uploaded
+                  resume is not permanently saved by this
+                  prototype. Interview answers and scores
+                  are saved locally for progress tracking.
+                  Avoid including unnecessary sensitive data.
+                </p>
+              </div>
+            </div>
+
+            {/* PREPARE RESUME INTERVIEW */}
+            {!chosenContext && (
+              <button
+                type="button"
+                onClick={prepareResumeInterview}
+                disabled={
+                  parsingResume ||
+                  loading ||
+                  !resumeText.trim() ||
+                  !targetRole.trim()
+                }
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+              >
                 <Sparkles size={18} />
-                Start AI Interview
-              </>
+                Prepare Resume Interview
+              </button>
             )}
-          </button>
+
+            {/* START RESUME INTERVIEW */}
+            {chosenContext?.mode === "resume" && (
+              <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-5">
+                <h4 className="font-semibold text-indigo-900">
+                  Ready for your interview
+                </h4>
+
+                <p className="mt-2 text-sm text-indigo-700">
+                  Role: {targetRole}
+                </p>
+
+                <p className="mt-1 text-sm text-indigo-700">
+                  Type: {interviewType.toUpperCase()}
+                </p>
+
+                <p className="mt-1 text-sm text-indigo-700">
+                  Up to {MAX_QUESTIONS} AI questions
+                </p>
+
+                <button
+                  type="button"
+                  onClick={startInterview}
+                  disabled={loading}
+                  className="mt-5 flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                >
+                  {loading ? (
+                    <>
+                      <Loader2
+                        size={18}
+                        className="animate-spin"
+                      />
+                      Preparing interview...
+                    </>
+                  ) : (
+                    <>
+                      <Mic size={18} />
+                      Start Resume Interview
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+          </div>
         </section>
       )}
 
       {/* CURRENT INTERVIEW QUESTION */}
       {currentQuestion && (
         <section className="rounded-2xl border border-slate-200 bg-white p-6">
+
           <div className="flex items-center justify-between gap-3">
             <span className="text-sm font-semibold text-indigo-600">
               Question {questionIndex + 1} of {MAX_QUESTIONS}
@@ -450,6 +1066,12 @@ export default function InterviewPractice({
               className="text-indigo-600"
             />
           </div>
+
+          <p className="mt-3 text-xs font-medium uppercase tracking-wide text-slate-500">
+            {mode === "resume"
+              ? `${interviewType} resume interview`
+              : "Assignment-based interview"}
+          </p>
 
           <h3 className="mt-5 text-xl font-semibold leading-8">
             {currentQuestion}
@@ -466,9 +1088,10 @@ export default function InterviewPractice({
             className="mt-6 min-h-40 w-full rounded-xl border border-slate-200 p-4 text-sm outline-none focus:border-indigo-500 disabled:bg-slate-50"
           />
 
-          {/* MICROPHONE AND SUBMIT BUTTONS */}
+          {/* MICROPHONE AND SUBMIT */}
           {!feedback && (
             <div className="mt-5 flex flex-wrap gap-3">
+
               <button
                 type="button"
                 onClick={
@@ -520,9 +1143,10 @@ export default function InterviewPractice({
             </div>
           )}
 
-          {/* GEMINI FEEDBACK */}
+          {/* AI FEEDBACK */}
           {feedback && (
             <div className="mt-6 rounded-xl bg-indigo-50 p-5">
+
               <div className="flex items-center gap-2">
                 <CheckCircle2
                   size={20}
@@ -539,7 +1163,7 @@ export default function InterviewPractice({
               </p>
 
               <p className="mt-1 text-xs text-slate-500">
-                AI-estimated interview answer score
+                AI-estimated answer score
               </p>
 
               <p className="mt-4 text-sm leading-6 text-slate-700">
@@ -619,7 +1243,13 @@ export default function InterviewPractice({
         </section>
       )}
 
-      {/* ERROR MESSAGE */}
+      {/* NOTICES AND ERRORS */}
+      {notice && (
+        <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          {notice}
+        </p>
+      )}
+
       {error && (
         <div
           role="alert"
