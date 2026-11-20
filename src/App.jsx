@@ -6,6 +6,10 @@ import ProgressDashboard from "./components/ProgressDashboard";
 import InterviewPractice from "./components/InterviewPractice";
 import GenerateAssessment from "./components/GenerateAssessment";
 import { getAssessmentResults } from "./utils/progressStorage";
+import {
+  saveAssessmentSession,
+  getAssessmentSession,
+} from "./utils/assessmentSession";
 
 import {
   LayoutDashboard,
@@ -66,7 +70,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [selectedAssessment, setSelectedAssessment] =
-    useState(null);
+  useState(() => getAssessmentSession());
 
   // Stores context for the Gemini AI interview.
   const [interviewAssessment, setInterviewAssessment] =
@@ -97,6 +101,7 @@ const choosePage = (page) => {
   const openAssessment = (assessment) => {
     setActivePage("Assessments");
     setSelectedAssessment(assessment);
+    saveAssessmentSession(assessment);
     setSidebarOpen(false);
 
     // Prepare the project context for AI interviews.
@@ -122,10 +127,13 @@ const choosePage = (page) => {
 
   // Return to the assessment list.
   const closeAssessment = () => {
-    refreshProgress();
-    setSelectedAssessment(null);
-    setActivePage("Assessments");
-  };
+  refreshProgress();
+
+  // Return to the list, but keep the saved
+  // assessment available for resuming.
+  setSelectedAssessment(null);
+  setActivePage("Assessments");
+};
 
   // Dashboard statistics.
   const results = Object.values(progress);
@@ -329,7 +337,43 @@ const choosePage = (page) => {
                   </div>
                 )}
 
+{/* RESUME PREVIOUS ASSESSMENT */}
+{getAssessmentSession() && (
+  <section className="mt-8 rounded-2xl border border-indigo-200 bg-indigo-50 p-6">
+    <div className="flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <p className="text-sm font-semibold text-indigo-700">
+          CONTINUE WHERE YOU LEFT OFF
+        </p>
+
+        <h3 className="mt-2 text-lg font-bold text-slate-900">
+          {getAssessmentSession().title}
+        </h3>
+
+        <p className="mt-2 text-sm text-slate-600">
+          Your previous assessment is available to resume.
+        </p>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => {
+          const previous = getAssessmentSession();
+
+          if (previous) {
+            openAssessment(previous);
+          }
+        }}
+        className="rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white"
+      >
+        Resume Assessment
+      </button>
+    </div>
+  </section>
+)}
+
                 {/* AI ASSESSMENT GENERATOR */}
+                
                 <div className="mt-8">
                   <GenerateAssessment onStart={openAssessment} />
                 </div>
