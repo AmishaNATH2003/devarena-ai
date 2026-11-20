@@ -5,6 +5,8 @@ import AssessmentWorkspace from "./components/AssessmentWorkspace";
 import ProgressDashboard from "./components/ProgressDashboard";
 import InterviewPractice from "./components/InterviewPractice";
 import GenerateAssessment from "./components/GenerateAssessment";
+
+import { challenges } from "./data/challenges";
 import { getAssessmentResults } from "./utils/progressStorage";
 import {
   saveAssessmentSession,
@@ -25,7 +27,7 @@ import {
   Sparkles,
 } from "lucide-react";
 
-// Existing predefined assessments
+// Predefined assessments.
 const assessments = [
   {
     id: 1,
@@ -56,7 +58,7 @@ const assessments = [
   },
 ];
 
-// Sidebar navigation
+// Sidebar navigation.
 const navigation = [
   { label: "Dashboard", icon: LayoutDashboard },
   { label: "Assessments", icon: Code2 },
@@ -65,82 +67,156 @@ const navigation = [
   { label: "Settings", icon: Settings },
 ];
 
+// Create interview context from the candidate's saved code.
+function buildInterviewContext(assessment) {
+  if (!assessment) return null;
+
+  const challenge =
+    assessment.generatedChallenge ||
+    challenges[assessment.id];
+
+  let files = { ...(challenge?.files || {}) };
+
+  // Prefer the latest code saved by Monaco Editor.
+  try {
+    const savedDraft = localStorage.getItem(
+      `devarena-draft-${assessment.id}`
+    );
+
+    if (savedDraft) {
+      const parsed = JSON.parse(savedDraft);
+
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed)
+      ) {
+        const validEntries = Object.entries(parsed).filter(
+          ([filename, code]) =>
+            typeof filename === "string" &&
+            typeof code === "string"
+        );
+
+        files = {
+          ...files,
+          ...Object.fromEntries(validEntries),
+        };
+      }
+    }
+  } catch {
+    // Use original files when browser storage is unavailable.
+  }
+
+  return {
+    title: assessment.title,
+    description: [
+      challenge?.description || assessment.description || "",
+      ...(challenge?.instructions || []),
+    ].join("\n"),
+    codeSummary: Object.entries(files)
+      .map(
+        ([filename, code]) =>
+          `File: ${filename}\n${code}`
+      )
+      .join("\n\n")
+      .slice(0, 10000),
+  };
+}
+
 export default function App() {
   const [activePage, setActivePage] = useState("Dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  // Restore previously opened assessment.
   const [selectedAssessment, setSelectedAssessment] =
-  useState(() => getAssessmentSession());
+    useState(() => getAssessmentSession());
 
-  // Stores context for the Gemini AI interview.
+  // Restore interview context from the saved project.
   const [interviewAssessment, setInterviewAssessment] =
-    useState(null);
+    useState(() =>
+      buildInterviewContext(getAssessmentSession())
+    );
 
+  // Saved assessment results.
   const [progress, setProgress] = useState(
     () => getAssessmentResults()
   );
 
-  // Refresh saved assessment results.
-  const refreshProgress = () => {
-    setProgress(getAssessmentResults());
-  };
+  // Keep a reference to the saved assessment.
+  const savedAssessment = getAssessmentSession();
 
-  // Navigate between pages.
-  
-const choosePage = (page) => {
-  refreshProgress();
-  setActivePage(page);
-  setSidebarOpen(false);
-
-  // Keep the current assignment when switching pages.
-  // The user can return to it from the Assessments tab.
-};
-
-
-  // Open a predefined or Gemini-generated assessment.
-  const openAssessment = (assessment) => {
-    setActivePage("Assessments");
-    setSelectedAssessment(assessment);
-    saveAssessmentSession(assessment);
-    setSidebarOpen(false);
-
-    // Prepare the project context for AI interviews.
-    const challenge = assessment.generatedChallenge;
-
-    const codeSummary = challenge?.files
-      ? Object.entries(challenge.files)
-          .map(
-            ([filename, code]) =>
-              `File: ${filename}\n${code}`
-          )
-          .join("\n\n")
-          .slice(0, 10000)
-      : "";
-
-    setInterviewAssessment({
-      title: assessment.title,
-      description:
-        challenge?.description || assessment.description,
-      codeSummary,
-    });
-  };
-
-  // Return to the assessment list.
-  const closeAssessment = () => {
-  refreshProgress();
-
-  // Return to the list, but keep the saved
-  // assessment available for resuming.
-  setSelectedAssessment(null);
-  setActivePage("Assessments");
-};
-
-  // Dashboard statistics.
   const results = Object.values(progress);
 
   const completedCount = results.filter(
     (result) => result.completed
   ).length;
+
+  const savedAssessmentResult = savedAssessment
+    ? progress[savedAssessment.id]
+    : null;
+
+  const hasSubmittedAssessment = Boolean(
+    savedAssessmentResult?.completed &&
+    savedAssessmentResult?.evaluationType ===
+      "ai-static-review"
+  );
+
+  // Refresh saved assessment data.
+  const refreshProgress = () => {
+    setProgress(getAssessmentResults());
+  };
+
+  // Sidebar navigation.
+  const choosePage = (page) => {
+    refreshProgress();
+    setActivePage(page);
+    setSidebarOpen(false);
+
+    // Preserve selectedAssessment so users can
+    // return to the same project without generating again.
+  };
+
+  // Open a predefined or AI-generated assessment.
+  const openAssessment = (assessment) => {
+    setSelectedAssessment(assessment);
+    setActivePage("Assessments");
+    setSidebarOpen(false);
+
+    saveAssessmentSession(assessment);
+
+    // Restore latest saved source code for interviewing.
+    setInterviewAssessment(
+      buildInterviewContext(assessment)
+    );
+  };
+
+  // Start an interview from the assessment workspace.
+  const startProjectInterview = (context) => {
+    setInterviewAssessment(context);
+    setActivePage("Interview Practice");
+    setSidebarOpen(false);
+  };
+
+  // Start an interview from the Resume Assessment card.
+  const startSavedInterview = () => {
+    const previous = getAssessmentSession();
+
+    if (!previous) return;
+
+    setInterviewAssessment(
+      buildInterviewContext(previous)
+    );
+
+    setActivePage("Interview Practice");
+    setSidebarOpen(false);
+  };
+
+  // Return to assessment list without deleting the draft.
+  const closeAssessment = () => {
+    refreshProgress();
+    setSelectedAssessment(null);
+    setActivePage("Assessments");
+  };
 
   return (
     <div className="min-h-screen bg-[#f7f8fc] text-slate-900">
@@ -244,13 +320,13 @@ const choosePage = (page) => {
               </button>
 
               <h1 className="font-semibold">
-                {selectedAssessment
+                {activePage === "Assessments" &&
+                selectedAssessment
                   ? "Assessment Workspace"
                   : activePage}
               </h1>
             </div>
 
-            {/* USER AVATAR */}
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-indigo-100 font-semibold text-indigo-700">
               D
             </div>
@@ -260,18 +336,20 @@ const choosePage = (page) => {
           <div className="mx-auto max-w-6xl p-5 md:p-10">
 
             {/* ASSESSMENT WORKSPACE */}
-            {activePage === "Assessments" && selectedAssessment ? (
+            {activePage === "Assessments" &&
+            selectedAssessment ? (
               <AssessmentWorkspace
-  key={selectedAssessment.id}
-  assessment={selectedAssessment}
-  onBack={closeAssessment}
-  onResultSaved={refreshProgress}
-  onCodeChange={setInterviewAssessment}
-/>
+                key={selectedAssessment.id}
+                assessment={selectedAssessment}
+                onBack={closeAssessment}
+                onResultSaved={refreshProgress}
+                onCodeChange={setInterviewAssessment}
+                onStartInterview={startProjectInterview}
+              />
             ) : activePage === "Dashboard" ||
-                activePage === "Assessments" ? (
+              activePage === "Assessments" ? (
               <>
-                {/* HERO SECTION */}
+                {/* HERO */}
                 <div className="rounded-3xl bg-slate-900 p-7 text-white md:p-10">
                   <p className="text-sm font-medium text-indigo-300">
                     ENGINEERING PRACTICE PLATFORM
@@ -282,8 +360,9 @@ const choosePage = (page) => {
                   </h2>
 
                   <p className="mt-4 max-w-xl text-sm leading-6 text-slate-300">
-                    Debug existing projects, improve code, get guided
-                    assistance and practice technical explanations.
+                    Debug existing projects, improve code,
+                    get guided assistance and practice
+                    technical explanations.
                   </p>
 
                   <button
@@ -337,43 +416,55 @@ const choosePage = (page) => {
                   </div>
                 )}
 
-{/* RESUME PREVIOUS ASSESSMENT */}
-{getAssessmentSession() && (
-  <section className="mt-8 rounded-2xl border border-indigo-200 bg-indigo-50 p-6">
-    <div className="flex flex-wrap items-center justify-between gap-4">
-      <div>
-        <p className="text-sm font-semibold text-indigo-700">
-          CONTINUE WHERE YOU LEFT OFF
-        </p>
+                {/* RESUME PREVIOUS ASSESSMENT */}
+                {savedAssessment && (
+                  <section className="mt-8 rounded-2xl border border-indigo-200 bg-indigo-50 p-6">
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-semibold text-indigo-700">
+                          CONTINUE WHERE YOU LEFT OFF
+                        </p>
 
-        <h3 className="mt-2 text-lg font-bold text-slate-900">
-          {getAssessmentSession().title}
-        </h3>
+                        <h3 className="mt-2 text-lg font-bold text-slate-900">
+                          {savedAssessment.title}
+                        </h3>
 
-        <p className="mt-2 text-sm text-slate-600">
-          Your previous assessment is available to resume.
-        </p>
-      </div>
+                        <p className="mt-2 text-sm text-slate-600">
+                          {hasSubmittedAssessment
+                            ? "Your assessment has been submitted. You can review it or continue to the AI interview."
+                            : "Your previous assessment is available to resume."}
+                        </p>
+                      </div>
 
-      <button
-        type="button"
-        onClick={() => {
-          const previous = getAssessmentSession();
+                      <div className="flex flex-wrap gap-3">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openAssessment(savedAssessment)
+                          }
+                          className="rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white"
+                        >
+                          {hasSubmittedAssessment
+                            ? "Review Assessment"
+                            : "Resume Assessment"}
+                        </button>
 
-          if (previous) {
-            openAssessment(previous);
-          }
-        }}
-        className="rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white"
-      >
-        Resume Assessment
-      </button>
-    </div>
-  </section>
-)}
+                        {hasSubmittedAssessment && (
+                          <button
+                            type="button"
+                            onClick={startSavedInterview}
+                            className="flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white"
+                          >
+                            <Mic size={17} />
+                            Start AI Interview
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </section>
+                )}
 
                 {/* AI ASSESSMENT GENERATOR */}
-                
                 <div className="mt-8">
                   <GenerateAssessment onStart={openAssessment} />
                 </div>
@@ -391,40 +482,34 @@ const choosePage = (page) => {
                   </p>
                 </div>
 
-                {/* PREDEFINED ASSESSMENT CARDS */}
+                {/* PREDEFINED ASSESSMENTS */}
                 <div className="grid gap-5 lg:grid-cols-3">
                   {assessments.map((item) => (
                     <article
                       key={item.id}
                       className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
                     >
-                      {/* DIFFICULTY */}
                       <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
                         {item.difficulty}
                       </span>
 
-                      {/* CATEGORY */}
                       <p className="mt-5 text-xs font-medium text-slate-500">
                         {item.category}
                       </p>
 
-                      {/* ASSESSMENT TITLE */}
                       <h4 className="mt-2 text-lg font-bold">
                         {item.title}
                       </h4>
 
-                      {/* DESCRIPTION */}
                       <p className="mt-3 min-h-16 text-sm leading-6 text-slate-600">
                         {item.description}
                       </p>
 
-                      {/* DURATION */}
                       <div className="mt-5 flex items-center gap-2 text-xs text-slate-500">
                         <Clock3 size={15} />
                         {item.duration}
                       </div>
 
-                      {/* OPEN ASSESSMENT */}
                       <button
                         type="button"
                         onClick={() => openAssessment(item)}
@@ -438,24 +523,21 @@ const choosePage = (page) => {
                 </div>
               </>
             ) : activePage === "My Progress" ? (
-              /* PROGRESS REPORT */
               <ProgressDashboard />
             ) : activePage === "Interview Practice" ? (
-              /* AI INTERVIEW PRACTICE */
               <InterviewPractice
                 key={interviewAssessment?.title || "general"}
                 assessment={interviewAssessment}
               />
             ) : (
-              /* SETTINGS AND OTHER PAGES */
               <section className="rounded-2xl border border-slate-200 bg-white p-8">
                 <h2 className="text-2xl font-bold">
                   {activePage}
                 </h2>
 
                 <p className="mt-3 text-slate-600">
-                  This section will be implemented in the upcoming
-                  development stages.
+                  This section will be implemented in an
+                  upcoming development stage.
                 </p>
               </section>
             )}

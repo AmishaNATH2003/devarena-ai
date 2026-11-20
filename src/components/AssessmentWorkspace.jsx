@@ -1,7 +1,10 @@
 
 import { useState } from "react";
 import Editor from "@monaco-editor/react";
-import { saveAssessmentResult } from "../utils/progressStorage";
+import {
+  saveAssessmentResult,
+  getAssessmentResults,
+} from "../utils/progressStorage";
 import { challenges } from "../data/challenges";
 import DebuggingCoach from "./DebuggingCoach";
 
@@ -24,16 +27,15 @@ export default function AssessmentWorkspace({
   onBack,
   onResultSaved,
   onCodeChange,
+  onStartInterview,
 }) {
   const challenge =
     assessment.generatedChallenge || challenges[assessment.id];
 
   const isGenerated = Boolean(assessment.generatedChallenge);
-
-  // Unique browser storage key for each assessment.
   const storageKey = `devarena-draft-${assessment.id}`;
 
-  // Restore previously saved code when available.
+  // Load saved code or use the original project files.
   const [files, setFiles] = useState(() => {
     const originalFiles = { ...(challenge?.files || {}) };
 
@@ -56,7 +58,7 @@ export default function AssessmentWorkspace({
         }
       }
     } catch {
-      // Fall back to original files if storage is unavailable.
+      // Use original project files.
     }
 
     return originalFiles;
@@ -70,10 +72,27 @@ export default function AssessmentWorkspace({
   const [showHint, setShowHint] = useState(false);
   const [saveError, setSaveError] = useState("");
 
-  // Gemini AI evaluation state.
-  const [evaluation, setEvaluation] = useState(null);
+  // Restore a prior submission if the saved code has not changed.
+  const [evaluation, setEvaluation] = useState(() => {
+    const saved = getAssessmentResults()[assessment.id];
+
+    return saved?.evaluationType === "ai-static-review" &&
+      JSON.stringify(saved.submittedFiles) === JSON.stringify(files)
+      ? saved.evaluation || null
+      : null;
+  });
+
   const [evaluating, setEvaluating] = useState(false);
   const [evaluationError, setEvaluationError] = useState("");
+
+  const [submitted, setSubmitted] = useState(() => {
+    const saved = getAssessmentResults()[assessment.id];
+
+    return Boolean(
+      saved?.evaluationType === "ai-static-review" &&
+      JSON.stringify(saved.submittedFiles) === JSON.stringify(files)
+    );
+  });
 
   if (!challenge) {
     return (
@@ -91,7 +110,7 @@ export default function AssessmentWorkspace({
     );
   }
 
-  // Send the candidate's latest code to App.jsx.
+  // Provide project-specific source code to Gemini Interview.
   const shareCodeWithInterview = (updatedFiles) => {
     onCodeChange?.({
       title: assessment.title,
@@ -109,7 +128,6 @@ export default function AssessmentWorkspace({
     });
   };
 
-  // Monaco language detection.
   const languageFor = (name) => {
     if (name.endsWith(".java")) return "java";
     if (name.endsWith(".sql")) return "sql";
@@ -126,7 +144,7 @@ export default function AssessmentWorkspace({
     return challenge.language || "plaintext";
   };
 
-  // Predefined source-pattern checks.
+  // Predefined checks are source-pattern checks, not executed tests.
   const runChecks = () => {
     if (isGenerated || !Array.isArray(challenge.checks)) {
       return;
@@ -153,13 +171,11 @@ export default function AssessmentWorkspace({
         passed,
         total: updated.length,
         score: updated.length
-          ? Math.round(
-              (passed / updated.length) * 100
-            )
+          ? Math.round((passed / updated.length) * 100)
           : 0,
         completed:
-          updated.length > 0 &&
-          passed === updated.length,
+          updated.length > 0 && passed === updated.length,
+        evaluationType: "source-pattern-check",
       });
 
       onResultSaved?.();
@@ -170,13 +186,15 @@ export default function AssessmentWorkspace({
     }
   };
 
-  // Gemini AI code evaluation.
+  // Ask Gemini to review the current candidate code.
   const evaluateSolution = async () => {
     if (evaluating) return;
 
     setEvaluating(true);
     setEvaluation(null);
     setEvaluationError("");
+    setSubmitted(false);
+    setSaveError("");
 
     try {
       const response = await fetch("/api/evaluate", {
@@ -201,9 +219,7 @@ export default function AssessmentWorkspace({
       }
 
       if (!data.evaluation) {
-        throw new Error(
-          "No evaluation was returned."
-        );
+        throw new Error("No evaluation was returned.");
       }
 
       setEvaluation(data.evaluation);
@@ -216,30 +232,101 @@ export default function AssessmentWorkspace({
     }
   };
 
-  // Restore original project files.
+  // Submit the Gemini-reviewed solution to My Progress.
+  const submitAssessment = () => {
+    if (!evaluation || submitted || evaluating) {
+      return;
+    }
+
+    const scores = [
+      Number(evaluation.correctness),
+      Number(evaluation.codeQuality),
+      Number(evaluation.requirements),
+    ];
+
+    if (
+      scores.some(
+        (score) =>
+          !Number.isFinite(score) ||
+          score < 0 ||
+          score > 100
+      )
+    ) {
+      setSaveError(
+        "Invalid evaluation scores. Please evaluate again."
+      );
+      return;
+    }
+
+    const score = Math.round(
+      scores.reduce(
+        (total, value) => total + value,
+        0
+      ) / scores.length
+    );
+
+    try {
+      saveAssessmentResult({
+        assessmentId: assessment.id,
+        title: assessment.title,
+        score,
+        passed: 0,
+        total: 0,
+        completed: true,
+        evaluationType: "ai-static-review",
+        evaluation,
+        submittedFiles: { ...files },
+      });
+
+      setSubmitted(true);
+      setSaveError("");
+      onResultSaved?.();
+    } catch {
+      setSaveError("Unable to save assessment results.");
+    }
+  };
+
+  // Open the Gemini interview using the latest project code.
+  const startProjectInterview = () => {
+    if (!submitted) return;
+
+    onStartInterview?.({
+      title: assessment.title,
+      description: [
+        challenge.description,
+        ...(challenge.instructions || []),
+      ].join("\n"),
+      codeSummary: Object.entries(files)
+        .map(
+          ([filename, code]) =>
+            `File: ${filename}\n${code}`
+        )
+        .join("\n\n")
+        .slice(0, 10000),
+    });
+  };
+
+  // Reset the editor to the originally generated files.
   const resetFiles = () => {
     const restoredFiles = { ...challenge.files };
 
-    // Delete the previously saved draft.
     try {
       localStorage.removeItem(storageKey);
     } catch {
-      // Continue resetting if browser storage is unavailable.
+      // Continue if browser storage is unavailable.
     }
 
-    // Restore original files in Monaco Editor.
     setFiles(restoredFiles);
     setActiveFile(challenge.startingFile);
 
-    // Synchronize the AI interview context.
     shareCodeWithInterview(restoredFiles);
 
-    // Clear outdated results.
     setResults(null);
     setShowHint(false);
     setSaveError("");
     setEvaluation(null);
     setEvaluationError("");
+    setSubmitted(false);
   };
 
   const unsolved =
@@ -247,7 +334,6 @@ export default function AssessmentWorkspace({
 
   return (
     <div className="space-y-5">
-
       {/* BACK BUTTON */}
       <button
         type="button"
@@ -258,7 +344,7 @@ export default function AssessmentWorkspace({
         Back to assessments
       </button>
 
-      {/* ASSESSMENT HEADER */}
+      {/* HEADER */}
       <div>
         {isGenerated && (
           <div className="mb-3 flex items-center gap-2 text-sm font-medium text-indigo-600">
@@ -276,25 +362,19 @@ export default function AssessmentWorkspace({
         </p>
       </div>
 
-      {/* PROJECT INSTRUCTIONS */}
+      {/* TASK INSTRUCTIONS */}
       <section className="rounded-xl border border-slate-200 bg-white p-5">
-        <h3 className="font-semibold">
-          Your task
-        </h3>
+        <h3 className="font-semibold">Your task</h3>
 
         <ul className="mt-3 list-inside list-disc space-y-2 text-sm text-slate-600">
-          {(challenge.instructions || []).map(
-            (step, index) => (
-              <li key={index}>{step}</li>
-            )
-          )}
+          {(challenge.instructions || []).map((step, index) => (
+            <li key={index}>{step}</li>
+          ))}
         </ul>
       </section>
 
-      {/* PROJECT EXPLORER AND EDITOR */}
+      {/* FILE EXPLORER AND MONACO EDITOR */}
       <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
-
-        {/* PROJECT EXPLORER */}
         <aside className="rounded-xl border border-slate-200 bg-white p-4">
           <h3 className="mb-4 text-xs font-bold uppercase text-slate-500">
             Project Explorer
@@ -304,9 +384,7 @@ export default function AssessmentWorkspace({
             <button
               type="button"
               key={filename}
-              onClick={() =>
-                setActiveFile(filename)
-              }
+              onClick={() => setActiveFile(filename)}
               className={`mb-2 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ${
                 activeFile === filename
                   ? "bg-indigo-50 text-indigo-700"
@@ -317,7 +395,6 @@ export default function AssessmentWorkspace({
                 size={16}
                 className="shrink-0"
               />
-
               <span className="break-all">
                 {filename}
               </span>
@@ -325,10 +402,7 @@ export default function AssessmentWorkspace({
           ))}
         </aside>
 
-        {/* MONACO EDITOR */}
         <div className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white">
-
-          {/* EDITOR HEADER */}
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
             <span className="truncate text-sm font-semibold">
               {activeFile}
@@ -344,7 +418,6 @@ export default function AssessmentWorkspace({
             </button>
           </div>
 
-          {/* CODE EDITOR */}
           <Editor
             key={`${assessment.id}-${activeFile}`}
             height="390px"
@@ -358,26 +431,26 @@ export default function AssessmentWorkspace({
                 [activeFile]: value ?? "",
               };
 
-              // Update the Monaco Editor.
               setFiles(updatedFiles);
 
-              // Automatically save edited project code.
+              // Persist the current draft in the browser.
               try {
                 localStorage.setItem(
                   storageKey,
                   JSON.stringify(updatedFiles)
                 );
               } catch {
-                // Continue editing if storage is unavailable.
+                // Editing remains available.
               }
 
-              // Send latest code to the AI interviewer.
+              // Synchronize project context for the AI interview.
               shareCodeWithInterview(updatedFiles);
 
-              // Clear evaluation results that used old code.
+              // Existing evaluation is no longer current.
               setResults(null);
               setEvaluation(null);
               setEvaluationError("");
+              setSubmitted(false);
             }}
             options={{
               minimap: { enabled: false },
@@ -404,8 +477,6 @@ export default function AssessmentWorkspace({
 
       {/* ASSESSMENT ACTIONS */}
       <div className="flex flex-wrap items-center gap-3">
-
-        {/* PREDEFINED CHECKS */}
         {!isGenerated && (
           <>
             <button
@@ -420,19 +491,16 @@ export default function AssessmentWorkspace({
             <button
               type="button"
               onClick={() =>
-                setShowHint((old) => !old)
+                setShowHint((previous) => !previous)
               }
               className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-5 py-3 text-sm"
             >
               <Lightbulb size={16} />
-              {showHint
-                ? "Hide Hints"
-                : "Get Hints"}
+              {showHint ? "Hide Hints" : "Get Hints"}
             </button>
           </>
         )}
 
-        {/* GEMINI AI EVALUATION */}
         <button
           type="button"
           onClick={evaluateSolution}
@@ -456,7 +524,7 @@ export default function AssessmentWorkspace({
         </button>
       </div>
 
-      {/* AI EVALUATION ERROR */}
+      {/* ERROR */}
       {evaluationError && (
         <p
           role="alert"
@@ -470,8 +538,6 @@ export default function AssessmentWorkspace({
       {/* AI CODE EVALUATION REPORT */}
       {evaluation && (
         <section className="rounded-2xl border border-violet-200 bg-white p-6 shadow-sm">
-
-          {/* REPORT HEADER */}
           <div className="flex items-center gap-3">
             <ClipboardCheck
               size={24}
@@ -492,18 +558,9 @@ export default function AssessmentWorkspace({
           {/* EVALUATION SCORES */}
           <div className="mt-6 grid gap-4 sm:grid-cols-3">
             {[
-              [
-                "Correctness",
-                evaluation.correctness,
-              ],
-              [
-                "Code Quality",
-                evaluation.codeQuality,
-              ],
-              [
-                "Requirements",
-                evaluation.requirements,
-              ],
+              ["Correctness", evaluation.correctness],
+              ["Code Quality", evaluation.codeQuality],
+              ["Requirements", evaluation.requirements],
             ].map(([label, score]) => (
               <div
                 key={label}
@@ -512,7 +569,6 @@ export default function AssessmentWorkspace({
                 <p className="text-3xl font-bold text-violet-700">
                   {score}%
                 </p>
-
                 <p className="mt-2 text-xs font-medium text-slate-600">
                   {label}
                 </p>
@@ -525,7 +581,6 @@ export default function AssessmentWorkspace({
             <h4 className="font-semibold text-slate-900">
               Overall Feedback
             </h4>
-
             <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
               {evaluation.summary}
             </p>
@@ -539,7 +594,7 @@ export default function AssessmentWorkspace({
             </h4>
 
             <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-600">
-              {evaluation.strengths.map(
+              {(evaluation.strengths || []).map(
                 (item, index) => (
                   <li key={index}>{item}</li>
                 )
@@ -555,7 +610,7 @@ export default function AssessmentWorkspace({
             </h4>
 
             <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-600">
-              {evaluation.issues.map(
+              {(evaluation.issues || []).map(
                 (item, index) => (
                   <li key={index}>{item}</li>
                 )
@@ -563,7 +618,7 @@ export default function AssessmentWorkspace({
             </ul>
           </div>
 
-          {/* SUGGESTED IMPROVEMENTS */}
+          {/* IMPROVEMENTS */}
           <div className="mt-6">
             <h4 className="flex items-center gap-2 font-semibold text-indigo-700">
               <Lightbulb size={18} />
@@ -571,7 +626,7 @@ export default function AssessmentWorkspace({
             </h4>
 
             <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-600">
-              {evaluation.improvements.map(
+              {(evaluation.improvements || []).map(
                 (item, index) => (
                   <li key={index}>{item}</li>
                 )
@@ -584,6 +639,41 @@ export default function AssessmentWorkspace({
             review. No code compilation, runtime execution,
             or automated tests were performed.
           </p>
+
+          {/* SUBMISSION AND INTERVIEW BUTTONS */}
+          <div className="mt-6 flex flex-wrap gap-3 border-t border-slate-100 pt-5">
+            <button
+              type="button"
+              onClick={submitAssessment}
+              disabled={submitted || evaluating}
+              className="flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white disabled:bg-green-600"
+            >
+              <CheckCircle2 size={18} />
+              {submitted
+                ? "Assessment Submitted"
+                : "Submit Assessment"}
+            </button>
+
+            {submitted && (
+              <button
+                type="button"
+                onClick={startProjectInterview}
+                disabled={!onStartInterview}
+                className="flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                <Sparkles size={18} />
+                Start AI Interview
+              </button>
+            )}
+          </div>
+
+          {submitted && (
+            <p className="mt-4 text-sm text-green-700">
+              Your AI-reviewed assessment has been saved to
+              My Progress. You can now continue to your
+              project-based interview.
+            </p>
+          )}
         </section>
       )}
 
@@ -608,20 +698,15 @@ export default function AssessmentWorkspace({
         </div>
       )}
 
-      {/* SAVE ERROR */}
       {saveError && (
-        <p
-          role="alert"
-          className="text-sm text-red-600"
-        >
+        <p role="alert" className="text-sm text-red-600">
           {saveError}
         </p>
       )}
 
-      {/* PREDEFINED SOLUTION CHECK RESULTS */}
+      {/* PREDEFINED SOLUTION CHECKS */}
       {!isGenerated && results && (
         <section className="rounded-xl border border-slate-200 bg-white p-5">
-
           <h3 className="mb-4 font-semibold">
             Solution Checks
           </h3>
@@ -659,11 +744,9 @@ export default function AssessmentWorkspace({
 
           <p className="mt-4 text-sm font-semibold">
             Passed:{" "}
-            {
-              results.filter(
-                (result) => result.passed
-              ).length
-            }
+            {results.filter(
+              (result) => result.passed
+            ).length}
             /{results.length}
           </p>
 

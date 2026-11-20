@@ -126,7 +126,9 @@ export default function ProgressDashboard() {
                     </p>
 
                     <p className="mt-1 text-xs text-slate-500">
-                      {attempt.passed}/{attempt.total} checks passed
+                      {attempt.evaluationType === "ai-static-review"
+  ? "AI static code evaluation"
+  : `${attempt.passed}/${attempt.total} source checks passed`}
                     </p>
                   </div>
 
