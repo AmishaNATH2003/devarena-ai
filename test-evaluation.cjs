@@ -11,13 +11,10 @@ async function sendEvaluation(label, payload) {
       `${BASE_URL}/api/evaluate`,
       {
         method: "POST",
-
         headers: {
           "Content-Type": "application/json",
         },
-
         body: JSON.stringify(payload),
-
         signal: AbortSignal.timeout(45000),
       }
     );
@@ -46,80 +43,64 @@ async function sendEvaluation(label, payload) {
       "Evaluation:",
       JSON.stringify(data.evaluation, null, 2)
     );
-
-    console.log(
-      "Overall Score:",
-      data.overallScore
-    );
-
-    console.log(
-      "Source Checks:",
-      data.sourceChecks
-    );
-
-    console.log(
-      "Tests Executed:",
-      data.testsExecuted
-    );
+    console.log("Overall Score:", data.overallScore);
+    console.log("Changed Files:", data.changedFiles);
+    console.log("Source Checks:", data.sourceChecks);
+    console.log("Tests Executed:", data.testsExecuted);
 
     return {
       status: response.status,
       data,
     };
   } catch (error) {
-    console.error(
-      "Request failed:",
-      error.message
-    );
-
+    console.error("Request failed:", error.message);
+    process.exitCode = 1;
     return null;
   }
 }
 
-async function main() {
-  // Test 1: Missing assessment ID must return 400.
-  const missingId = await sendEvaluation(
-    "Missing Assessment ID",
-    {
-      title: "Test Assessment",
-      description: "Test description",
-      instructions: ["Fix the bug"],
-      files: {
-        "Main.java": "class Main {}",
-      },
-    }
-  );
+function expectStatus(label, result, expected) {
+  if (!result) {
+    console.error(`FAIL: ${label} - no response`);
+    process.exitCode = 1;
+    return;
+  }
 
-  if (
-    missingId &&
-    missingId.status !== 400
-  ) {
+  if (result.status === expected) {
+    console.log(`PASS: ${label}`);
+  } else {
     console.error(
-      "FAIL: Missing ID should return HTTP 400."
+      `FAIL: ${label} - expected ${expected}, got ${result.status}`
     );
     process.exitCode = 1;
   }
+}
 
-  // Test 2: Valid generated-assignment request.
-  // The API performs static Gemini evaluation.
-  const generated = await sendEvaluation(
-    "Generated Assessment",
-    {
-      assessmentId: "ai-shopping-cart-test",
+async function main() {
+  const { challenges } = await import(
+    "./src/data/challenges.js"
+  );
 
-      title: "Fix Shopping Cart Calculations",
+  const originalFiles = {
+    "Cart.java": `
+public class Cart {
+    public double calculateSubtotal(
+        double price, int quantity
+    ) {
+        return price;
+    }
 
-      description:
-        "Fix subtotal and tax calculations in a Java shopping cart.",
+    public double calculateTotal(
+        double subtotal
+    ) {
+        return subtotal * 10;
+    }
+}
+`,
+  };
 
-      instructions: [
-        "Multiply price by quantity to calculate subtotal.",
-        "Apply a tax rate of 10%.",
-        "Return the correct final total.",
-      ],
-
-      files: {
-        "Cart.java": `
+  const correctedFiles = {
+    "Cart.java": `
 public class Cart {
     public double calculateSubtotal(
         double price, int quantity
@@ -134,79 +115,149 @@ public class Cart {
     }
 }
 `,
+  };
+
+  const generatedBase = {
+    assessmentId: "ai-shopping-cart-test",
+    title: "Fix Shopping Cart Calculations",
+    description:
+      "Fix subtotal and tax calculations in a Java shopping cart.",
+    instructions: [
+      "Multiply price by quantity to calculate subtotal.",
+      "Apply a tax rate of 10%.",
+      "Return the correct final total.",
+    ],
+    originalFiles,
+  };
+
+  const missingId = await sendEvaluation(
+    "Missing Assessment ID",
+    {
+      title: "Test Assessment",
+      description: "Test description",
+      instructions: ["Fix the bug"],
+      files: {
+        "Main.java": "class Main {}",
       },
     }
   );
 
-  if (
-    generated &&
-    generated.status !== 200
-  ) {
+  expectStatus(
+    "Missing Assessment ID",
+    missingId,
+    400
+  );
+
+  const generatedUnchanged = await sendEvaluation(
+    "Unchanged Generated Assignment",
+    {
+      ...generatedBase,
+      files: { ...originalFiles },
+    }
+  );
+
+  expectStatus(
+    "Unchanged Generated Assignment",
+    generatedUnchanged,
+    422
+  );
+
+  const missingOriginal = await sendEvaluation(
+    "Missing Generated Baseline",
+    {
+      assessmentId: generatedBase.assessmentId,
+      title: generatedBase.title,
+      description: generatedBase.description,
+      instructions: generatedBase.instructions,
+      files: correctedFiles,
+    }
+  );
+
+  expectStatus(
+    "Missing Generated Baseline",
+    missingOriginal,
+    400
+  );
+
+  const generatedChanged = await sendEvaluation(
+    "Corrected Generated Assignment",
+    {
+      ...generatedBase,
+      files: correctedFiles,
+    }
+  );
+
+const cosmeticEdit = await sendEvaluation(
+  "Comment-Only Generated Assignment",
+  {
+    ...generatedBase,
+    files: {
+      "Cart.java":
+        originalFiles["Cart.java"] +
+        "\n// TODO: Fix the shopping cart bugs",
+    },
+  }
+);
+
+if (cosmeticEdit?.status === 200) {
+  const correctness =
+    cosmeticEdit.data.evaluation.correctness;
+
+  console.log(
+    "Comment-only correctness score:",
+    correctness
+  );
+
+  if (correctness > 20) {
     console.warn(
-      "Generated assessment was not scored.",
-      "Check Gemini availability and server logs."
+      "WARNING: Cosmetic changes received too much credit."
+    );
+  } else {
+    console.log(
+      "PASS: Cosmetic changes received low correctness."
     );
   }
+}
 
-  // Test 3: Original predefined assignment.
-  // Must return 422 without making a Gemini call.
-  const unchanged = await sendEvaluation(
+
+  if (generatedChanged) {
+    expectStatus(
+      "Corrected Generated Assignment",
+      generatedChanged,
+      200
+    );
+
+    if (
+      generatedChanged.status === 200 &&
+      !generatedChanged.data.changedFiles?.includes(
+        "Cart.java"
+      )
+    ) {
+      console.error(
+        "FAIL: Cart.java was not detected as changed."
+      );
+      process.exitCode = 1;
+    }
+  }
+
+  const sqlChallenge = challenges[2];
+
+  const unchangedSql = await sendEvaluation(
     "Unchanged SQL Assignment",
     {
       assessmentId: 2,
-
-      title: "Fix a SQL Query",
-
-      description:
-        "Repair the employee report query so it returns active employees and their departments in salary order.",
-
-      instructions: [
-        "Join employees.department_id to departments.id.",
-        "Include only active employees (status = 'active').",
-        "Sort by salary from highest to lowest.",
-      ],
-
-      files: {
-        "schema.sql": `CREATE TABLE departments (
-  id INTEGER PRIMARY KEY,
-  name VARCHAR(100) NOT NULL
-);
-
-CREATE TABLE employees (
-  id INTEGER PRIMARY KEY,
-  name VARCHAR(100) NOT NULL,
-  department_id INTEGER,
-  status VARCHAR(20) NOT NULL,
-  salary INTEGER NOT NULL
-);`,
-
-        "sample-data.sql": `INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Support');
-
-INSERT INTO employees VALUES
-  (101, 'Asha', 1, 'active', 80000),
-  (102, 'Ravi', 2, 'inactive', 50000),
-  (103, 'Neha', 1, 'active', 95000);
-
--- Expected result: Neha (95000), Asha (80000).`,
-
-        "report.sql": `SELECT e.name, d.name AS department, e.salary
-FROM employees e
-JOIN departments d ON e.id = d.id
-WHERE e.status = 'inactive'
-ORDER BY e.salary ASC;`,
-      },
+      title: "Fix SQL Query",
+      description: sqlChallenge.description,
+      instructions: sqlChallenge.instructions,
+      files: { ...sqlChallenge.files },
     }
   );
 
-  if (
-    unchanged &&
-    unchanged.status !== 422
-  ) {
-    console.error(
-      "FAIL: Unchanged assignment should return HTTP 422."
-    );
-    process.exitCode = 1;
-  }
+  expectStatus(
+    "Unchanged SQL Assignment",
+    unchangedSql,
+    422
+  );
 }
 
 main().catch((error) => {

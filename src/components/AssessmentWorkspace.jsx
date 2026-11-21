@@ -79,7 +79,9 @@ function getChangedFiles(originalFiles, submittedFiles) {
 
 function safeScore(value) {
   const number = Number(value);
+
   if (!Number.isFinite(number)) return 0;
+
   return Math.min(100, Math.max(0, number));
 }
 
@@ -229,7 +231,6 @@ export default function AssessmentWorkspace({
     setSaveError("");
   };
 
-  // Built-in static checks; no code execution.
   const runChecks = () => {
     if (
       isGenerated ||
@@ -324,15 +325,23 @@ export default function AssessmentWorkspace({
     try {
       const response = await fetch("/api/evaluate", {
         method: "POST",
+
         headers: {
           "Content-Type": "application/json",
         },
+
         body: JSON.stringify({
           assessmentId: assessment.id,
           title: assessment.title,
           description: challenge.description,
           instructions: challenge.instructions || [],
           files,
+
+          // Preserve original starter files for
+          // generated assignments.
+          ...(isGenerated
+            ? { originalFiles: challenge.files }
+            : {}),
         }),
       });
 
@@ -420,19 +429,28 @@ export default function AssessmentWorkspace({
         title: assessment.title,
         language: challenge.language || null,
         score,
+
         passed:
           results?.filter((item) => item.passed).length || 0,
         total: results?.length || 0,
+
+        // This represents submission completion,
+        // not proof that all requirements passed.
         completed: true,
+
         evaluationType: "ai-static-review",
         evaluation,
-        submittedFiles: { ...files },
+
+        submittedFiles: {
+          ...files,
+        },
       });
 
       savedResult = savedResults[assessment.id];
 
       setSubmitted(true);
       onResultSaved?.();
+
       setCloudStatus("Saving to Supabase...");
     } catch (error) {
       console.error(
@@ -478,6 +496,7 @@ export default function AssessmentWorkspace({
         challenge.description,
         ...(challenge.instructions || []),
       ].join("\n"),
+
       codeSummary: Object.entries(files)
         .map(
           ([filename, code]) =>
@@ -510,6 +529,7 @@ export default function AssessmentWorkspace({
     }
 
     setFiles(restoredFiles);
+
     setActiveFile(
       challenge.startingFile ||
         Object.keys(restoredFiles)[0] ||
@@ -534,6 +554,7 @@ export default function AssessmentWorkspace({
     return (
       <section className="rounded-xl bg-white p-6">
         <p>This challenge is not available.</p>
+
         <button
           type="button"
           onClick={onBack}
@@ -547,7 +568,6 @@ export default function AssessmentWorkspace({
 
   return (
     <div className="space-y-5">
-      {/* BACK */}
       <button
         type="button"
         onClick={onBack}
@@ -557,7 +577,6 @@ export default function AssessmentWorkspace({
         Back to assessments
       </button>
 
-      {/* TITLE */}
       <div>
         {isGenerated && (
           <div className="mb-3 flex items-center gap-2 text-sm font-medium text-indigo-600">
@@ -575,7 +594,6 @@ export default function AssessmentWorkspace({
         </p>
       </div>
 
-      {/* INSTRUCTIONS */}
       <section className="rounded-xl border border-slate-200 bg-white p-5">
         <h3 className="font-semibold">Your task</h3>
 
@@ -588,7 +606,6 @@ export default function AssessmentWorkspace({
         </ul>
       </section>
 
-      {/* FILE EXPLORER + MONACO */}
       <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
         <aside className="rounded-xl border border-slate-200 bg-white p-4">
           <h3 className="mb-4 text-xs font-bold uppercase text-slate-500">
@@ -606,8 +623,13 @@ export default function AssessmentWorkspace({
                   : "hover:bg-slate-100"
               }`}
             >
-              <FileCode2 size={16} className="shrink-0" />
-              <span className="break-all">{filename}</span>
+              <FileCode2
+                size={16}
+                className="shrink-0"
+              />
+              <span className="break-all">
+                {filename}
+              </span>
             </button>
           ))}
         </aside>
@@ -651,7 +673,6 @@ export default function AssessmentWorkspace({
         </div>
       </div>
 
-      {/* AI COACH */}
       <DebuggingCoach
         key={assessment.id}
         assessmentId={assessment.id}
@@ -663,7 +684,6 @@ export default function AssessmentWorkspace({
         ].join("\n")}
       />
 
-      {/* ACTION BUTTONS */}
       <div className="flex flex-wrap items-center gap-3">
         {!isGenerated && (
           <>
@@ -713,7 +733,6 @@ export default function AssessmentWorkspace({
         </button>
       </div>
 
-      {/* ERRORS */}
       {evaluationError && (
         <p
           role="alert"
@@ -724,7 +743,6 @@ export default function AssessmentWorkspace({
         </p>
       )}
 
-      {/* AI EVALUATION */}
       {evaluation && (
         <section className="rounded-2xl border border-violet-200 bg-white p-6 shadow-sm">
           <div className="flex items-center gap-3">
@@ -732,7 +750,6 @@ export default function AssessmentWorkspace({
               size={24}
               className="text-violet-600"
             />
-
             <div>
               <h3 className="text-xl font-bold">
                 AI Code Evaluation Report
@@ -764,7 +781,7 @@ export default function AssessmentWorkspace({
           </div>
 
           <div className="mt-6">
-            <h4 className="font-semibold text-slate-900">
+            <h4 className="font-semibold">
               Overall Feedback
             </h4>
             <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
@@ -797,9 +814,9 @@ export default function AssessmentWorkspace({
           </div>
 
           <p className="mt-6 border-t border-slate-100 pt-4 text-xs text-slate-500">
-            These scores are estimates based on static AI
-            review and source-pattern checks. No code
-            compilation or automated tests were performed.
+            Scores are based on static AI review.
+            Predefined challenges also use source-pattern
+            checks. Candidate code was not compiled or executed.
           </p>
 
           <div className="mt-6 flex flex-wrap gap-3 border-t border-slate-100 pt-5">
@@ -817,6 +834,7 @@ export default function AssessmentWorkspace({
               ) : (
                 <CheckCircle2 size={18} />
               )}
+
               {saving
                 ? "Saving..."
                 : submitted
@@ -839,14 +857,13 @@ export default function AssessmentWorkspace({
 
           {submitted && (
             <p className="mt-4 text-sm text-green-700">
-              Your AI-reviewed assessment has been saved.
-              You can now continue to your project-based interview.
+              Your assessment has been saved.
+              You can continue to your project-based interview.
             </p>
           )}
         </section>
       )}
 
-      {/* CLOUD STATUS */}
       {cloudStatus && (
         <div
           role="status"
@@ -864,31 +881,33 @@ export default function AssessmentWorkspace({
       )}
 
       {saveError && (
-        <p role="alert" className="text-sm text-red-600">
+        <p
+          role="alert"
+          className="text-sm text-red-600"
+        >
           {saveError}
         </p>
       )}
 
-      {/* HINTS */}
       {!isGenerated && showHint && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
           <h3 className="font-semibold">
             Debugging hints
           </h3>
-
           <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-700">
             {(
               unsolved.length
                 ? unsolved
                 : challenge.checks || []
             ).map((test) => (
-              <li key={test.name}>{test.hint}</li>
+              <li key={test.name}>
+                {test.hint}
+              </li>
             ))}
           </ul>
         </div>
       )}
 
-      {/* SOLUTION CHECKS */}
       {!isGenerated && results && (
         <section className="rounded-xl border border-slate-200 bg-white p-5">
           <h3 className="mb-4 font-semibold">
@@ -916,7 +935,6 @@ export default function AssessmentWorkspace({
                 <p className="text-sm font-medium">
                   {result.name}
                 </p>
-
                 {!result.passed && result.hint && (
                   <p className="mt-1 text-xs text-slate-500">
                     {result.hint}
@@ -928,13 +946,15 @@ export default function AssessmentWorkspace({
 
           <p className="mt-4 text-sm font-semibold">
             Passed:{" "}
-            {results.filter((result) => result.passed).length}
+            {results.filter(
+              (result) => result.passed
+            ).length}
             /{results.length}
           </p>
 
           <p className="mt-2 text-xs text-slate-500">
-            These are static source-pattern checks,
-            not executed tests.
+            These are source-pattern checks,
+            not executable tests.
           </p>
         </section>
       )}

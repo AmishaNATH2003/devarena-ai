@@ -9,6 +9,15 @@ export const ASSESSMENT_LIMITS = Object.freeze({
   maxFileLength: 12000,
 });
 
+export function isValidAssessmentId(id) {
+  return (
+    (typeof id === "string" &&
+      id.trim().length > 0 &&
+      id.length <= 150) ||
+    (Number.isInteger(id) && id > 0)
+  );
+}
+
 export function validateAssessmentContent(data) {
   const errors = [];
 
@@ -17,12 +26,7 @@ export function validateAssessmentContent(data) {
     return ["assessment"];
   }
 
-  const {
-    title,
-    description,
-    instructions,
-    files,
-  } = data;
+  const { title, description, instructions, files } = data;
 
   if (
     typeof title !== "string" ||
@@ -42,13 +46,11 @@ export function validateAssessmentContent(data) {
 
   if (
     !Array.isArray(instructions) ||
-    instructions.length >
-      ASSESSMENT_LIMITS.maxInstructions ||
+    instructions.length > ASSESSMENT_LIMITS.maxInstructions ||
     instructions.some(
-      (instruction) =>
-        typeof instruction !== "string" ||
-        instruction.length >
-          ASSESSMENT_LIMITS.maxInstructionLength
+      (item) =>
+        typeof item !== "string" ||
+        item.length > ASSESSMENT_LIMITS.maxInstructionLength
     )
   ) {
     errors.push("instructions");
@@ -72,8 +74,7 @@ export function validateAssessmentContent(data) {
           name.length >
             ASSESSMENT_LIMITS.maxFilenameLength ||
           typeof code !== "string" ||
-          code.length >
-            ASSESSMENT_LIMITS.maxFileLength
+          code.length > ASSESSMENT_LIMITS.maxFileLength
       )
     ) {
       errors.push("files");
@@ -81,15 +82,6 @@ export function validateAssessmentContent(data) {
   }
 
   return errors;
-}
-
-export function isValidAssessmentId(id) {
-  return (
-    (typeof id === "string" &&
-      id.trim().length > 0 &&
-      id.length <= 150) ||
-    (Number.isInteger(id) && id > 0)
-  );
 }
 
 export function validateGeneratedAssessment(data) {
