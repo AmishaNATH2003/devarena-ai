@@ -17,7 +17,7 @@ async function login(page, email = "tester@example.com") {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
   await page.getByLabel("Email address").fill(email);
-  await page.getByLabel("Password").fill("testing-only-password");
+  await page.locator("#auth-password").fill("testing-only-password");
   await page.getByRole("button", { name: "Sign In", exact: true }).click();
   await expect(page.getByRole("heading", { name: /Learn to solve problems/i })).toBeVisible();
 }
