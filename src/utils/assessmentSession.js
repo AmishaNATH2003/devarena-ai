@@ -1,53 +1,78 @@
 
-const SESSION_KEY = "devarena-active-assessment";
+import {
+  readUserStorage,
+  writeUserStorage,
+  removeUserStorage,
+} from "./userStorage";
 
+const SESSION_KEY = "active-assessment";
+
+/**
+ * Save the currently selected assessment for
+ * the authenticated user.
+ */
 export function saveAssessmentSession(assessment) {
-  if (!assessment || !assessment.id) {
+  if (
+    !assessment ||
+    typeof assessment !== "object" ||
+    !assessment.id ||
+    typeof assessment.title !== "string"
+  ) {
     return false;
   }
 
   try {
-    localStorage.setItem(
-      SESSION_KEY,
-      JSON.stringify(assessment)
+    writeUserStorage(SESSION_KEY, assessment);
+    return true;
+  } catch (error) {
+    console.error(
+      "Unable to save assessment session:",
+      error
     );
 
-    return true;
-  } catch {
     return false;
   }
 }
 
+/**
+ * Retrieve the current user's active assessment.
+ *
+ * Never read another user's assessment or
+ * fall back to the old shared localStorage key.
+ */
 export function getAssessmentSession() {
-  try {
-    const saved = localStorage.getItem(SESSION_KEY);
+  const assessment = readUserStorage(
+    SESSION_KEY,
+    null
+  );
 
-    if (!saved) {
-      return null;
-    }
-
-    const assessment = JSON.parse(saved);
-
-    if (
-      !assessment ||
-      typeof assessment !== "object" ||
-      !assessment.id ||
-      typeof assessment.title !== "string"
-    ) {
-      return null;
-    }
-
-    return assessment;
-  } catch {
+  if (
+    !assessment ||
+    typeof assessment !== "object" ||
+    Array.isArray(assessment) ||
+    !assessment.id ||
+    typeof assessment.title !== "string"
+  ) {
     return null;
   }
+
+  return assessment;
 }
 
+/**
+ * Clear only the currently authenticated user's
+ * active assessment.
+ */
 export function clearAssessmentSession() {
   try {
-    localStorage.removeItem(SESSION_KEY);
+    removeUserStorage(SESSION_KEY);
     return true;
-  } catch {
+  } catch (error) {
+    console.error(
+      "Unable to clear assessment session:",
+      error
+    );
+
     return false;
   }
 }

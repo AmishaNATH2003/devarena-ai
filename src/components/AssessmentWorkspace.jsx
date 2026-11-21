@@ -1,10 +1,20 @@
 
 import { useState } from "react";
 import Editor from "@monaco-editor/react";
+
 import {
   saveAssessmentResult,
   getAssessmentResults,
 } from "../utils/progressStorage";
+
+import { saveCloudAssessment } from "../lib/cloudProgress";
+
+import {
+  readUserStorage,
+  writeUserStorage,
+  removeUserStorage,
+} from "../utils/userStorage";
+
 import { challenges } from "../data/challenges";
 import DebuggingCoach from "./DebuggingCoach";
 
@@ -22,6 +32,75 @@ import {
   ClipboardCheck,
 } from "lucide-react";
 
+function isValidDraft(draft) {
+  return (
+    draft !== null &&
+    typeof draft === "object" &&
+    !Array.isArray(draft) &&
+    Object.keys(draft).length > 0 &&
+    Object.values(draft).every(
+      (value) => typeof value === "string"
+    )
+  );
+}
+
+function loadDraft(assessmentId, originalFiles) {
+  const saved = readUserStorage(
+    `draft:${assessmentId}`,
+    null
+  );
+
+  if (!isValidDraft(saved)) {
+    return { ...originalFiles };
+  }
+
+  const restored = { ...originalFiles };
+
+  for (const filename of Object.keys(originalFiles)) {
+    if (typeof saved[filename] === "string") {
+      restored[filename] = saved[filename];
+    }
+  }
+
+  return restored;
+}
+
+function normalizeCode(code) {
+  return String(code ?? "").replace(/\s+/g, "");
+}
+
+function getChangedFiles(originalFiles, submittedFiles) {
+  return Object.keys(originalFiles).filter(
+    (filename) =>
+      normalizeCode(originalFiles[filename]) !==
+      normalizeCode(submittedFiles[filename])
+  );
+}
+
+function safeScore(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.min(100, Math.max(0, number));
+}
+
+function FeedbackItems({ items }) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return (
+      <p className="mt-3 text-sm text-slate-500">
+        No additional feedback.
+      </p>
+    );
+  }
+
+  return (
+    <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-600">
+      {items.map((item, index) => (
+        <li key={index}>{item}</li>
+      ))}
+    </ul>
+  );
+}
+
 export default function AssessmentWorkspace({
   assessment,
   onBack,
@@ -30,93 +109,71 @@ export default function AssessmentWorkspace({
   onStartInterview,
 }) {
   const challenge =
-    assessment.generatedChallenge || challenges[assessment.id];
+    assessment.generatedChallenge ||
+    challenges[assessment.id];
 
-  const isGenerated = Boolean(assessment.generatedChallenge);
-  const storageKey = `devarena-draft-${assessment.id}`;
+  const isGenerated = Boolean(
+    assessment.generatedChallenge
+  );
 
-  // Load saved code or use the original project files.
-  const [files, setFiles] = useState(() => {
-    const originalFiles = { ...(challenge?.files || {}) };
+  const draftKey = `draft:${assessment.id}`;
 
-    try {
-      const saved = localStorage.getItem(storageKey);
-
-      if (saved) {
-        const parsed = JSON.parse(saved);
-
-        if (
-          parsed &&
-          typeof parsed === "object" &&
-          !Array.isArray(parsed) &&
-          Object.keys(parsed).length > 0 &&
-          Object.values(parsed).every(
-            (value) => typeof value === "string"
-          )
-        ) {
-          return { ...originalFiles, ...parsed };
-        }
-      }
-    } catch {
-      // Use original project files.
-    }
-
-    return originalFiles;
-  });
+  const [files, setFiles] = useState(() =>
+    loadDraft(
+      assessment.id,
+      challenge?.files || {}
+    )
+  );
 
   const [activeFile, setActiveFile] = useState(
-    challenge?.startingFile || ""
+    () =>
+      challenge?.startingFile ||
+      Object.keys(challenge?.files || {})[0] ||
+      ""
   );
 
   const [results, setResults] = useState(null);
   const [showHint, setShowHint] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [evaluating, setEvaluating] = useState(false);
+
   const [saveError, setSaveError] = useState("");
+  const [evaluationError, setEvaluationError] =
+    useState("");
+  const [cloudStatus, setCloudStatus] = useState("");
 
-  // Restore a prior submission if the saved code has not changed.
   const [evaluation, setEvaluation] = useState(() => {
-    const saved = getAssessmentResults()[assessment.id];
+    const saved =
+      getAssessmentResults()[assessment.id];
 
-    return saved?.evaluationType === "ai-static-review" &&
-      JSON.stringify(saved.submittedFiles) === JSON.stringify(files)
+    const matchesFiles =
+      JSON.stringify(saved?.submittedFiles) ===
+      JSON.stringify(files);
+
+    return saved?.evaluationType ===
+      "ai-static-review" &&
+      matchesFiles
       ? saved.evaluation || null
       : null;
   });
 
-  const [evaluating, setEvaluating] = useState(false);
-  const [evaluationError, setEvaluationError] = useState("");
-
   const [submitted, setSubmitted] = useState(() => {
-    const saved = getAssessmentResults()[assessment.id];
+    const saved =
+      getAssessmentResults()[assessment.id];
 
     return Boolean(
       saved?.evaluationType === "ai-static-review" &&
-      JSON.stringify(saved.submittedFiles) === JSON.stringify(files)
+      JSON.stringify(saved.submittedFiles) ===
+        JSON.stringify(files)
     );
   });
 
-  if (!challenge) {
-    return (
-      <section className="rounded-xl bg-white p-6">
-        <p>This challenge is not available.</p>
-
-        <button
-          type="button"
-          onClick={onBack}
-          className="mt-4 text-indigo-600"
-        >
-          Back to assessments
-        </button>
-      </section>
-    );
-  }
-
-  // Provide project-specific source code to Gemini Interview.
   const shareCodeWithInterview = (updatedFiles) => {
     onCodeChange?.({
       title: assessment.title,
       description: [
-        challenge.description,
-        ...(challenge.instructions || []),
+        challenge?.description || "",
+        ...(challenge?.instructions || []),
       ].join("\n"),
       codeSummary: Object.entries(updatedFiles)
         .map(
@@ -128,33 +185,76 @@ export default function AssessmentWorkspace({
     });
   };
 
-  const languageFor = (name) => {
-    if (name.endsWith(".java")) return "java";
-    if (name.endsWith(".sql")) return "sql";
-    if (name.endsWith(".jsx")) return "javascript";
-    if (name.endsWith(".js")) return "javascript";
-    if (name.endsWith(".tsx")) return "typescript";
-    if (name.endsWith(".ts")) return "typescript";
-    if (name.endsWith(".json")) return "json";
-    if (name.endsWith(".css")) return "css";
-    if (name.endsWith(".html")) return "html";
-    if (name.endsWith(".md")) return "markdown";
-    if (name.endsWith(".py")) return "python";
-
-    return challenge.language || "plaintext";
+  const languageFor = (filename) => {
+    if (filename.endsWith(".java")) return "java";
+    if (filename.endsWith(".sql")) return "sql";
+    if (filename.endsWith(".jsx")) return "javascript";
+    if (filename.endsWith(".js")) return "javascript";
+    if (filename.endsWith(".tsx")) return "typescript";
+    if (filename.endsWith(".ts")) return "typescript";
+    if (filename.endsWith(".json")) return "json";
+    if (filename.endsWith(".css")) return "css";
+    if (filename.endsWith(".html")) return "html";
+    if (filename.endsWith(".md")) return "markdown";
+    if (filename.endsWith(".py")) return "python";
+    return challenge?.language || "plaintext";
   };
 
-  // Predefined checks are source-pattern checks, not executed tests.
+  const updateFile = (filename, value) => {
+    if (saving || evaluating) return;
+
+    const updatedFiles = {
+      ...files,
+      [filename]: value ?? "",
+    };
+
+    setFiles(updatedFiles);
+
+    try {
+      writeUserStorage(draftKey, updatedFiles);
+    } catch (error) {
+      console.error(
+        "Unable to save editor draft:",
+        error
+      );
+    }
+
+    shareCodeWithInterview(updatedFiles);
+
+    setResults(null);
+    setEvaluation(null);
+    setEvaluationError("");
+    setSubmitted(false);
+    setCloudStatus("");
+    setSaveError("");
+  };
+
+  // Built-in static checks; no code execution.
   const runChecks = () => {
-    if (isGenerated || !Array.isArray(challenge.checks)) {
+    if (
+      isGenerated ||
+      !Array.isArray(challenge?.checks) ||
+      saving ||
+      evaluating
+    ) {
       return;
     }
 
-    const updated = challenge.checks.map((test) => ({
-      name: test.name,
-      passed: test.check(files),
-      hint: test.hint,
-    }));
+    const updated = challenge.checks.map((test) => {
+      let passed;
+
+      try {
+        passed = test.check(files) === true;
+      } catch {
+        passed = false;
+      }
+
+      return {
+        name: test.name,
+        passed,
+        hint: test.hint,
+      };
+    });
 
     setResults(updated);
 
@@ -163,6 +263,7 @@ export default function AssessmentWorkspace({
     ).length;
 
     setSaveError("");
+    setCloudStatus("");
 
     try {
       saveAssessmentResult({
@@ -171,30 +272,54 @@ export default function AssessmentWorkspace({
         passed,
         total: updated.length,
         score: updated.length
-          ? Math.round((passed / updated.length) * 100)
+          ? Math.round(
+              (passed / updated.length) * 100
+            )
           : 0,
         completed:
-          updated.length > 0 && passed === updated.length,
+          updated.length > 0 &&
+          passed === updated.length,
         evaluationType: "source-pattern-check",
       });
 
       onResultSaved?.();
-    } catch {
+    } catch (error) {
+      console.error(
+        "Unable to save source checks:",
+        error
+      );
+
       setSaveError(
-        "Checks ran, but progress could not be saved."
+        "Checks ran, but local progress could not be saved."
       );
     }
   };
 
-  // Ask Gemini to review the current candidate code.
   const evaluateSolution = async () => {
-    if (evaluating) return;
+    if (evaluating || saving || !challenge) return;
+
+    const changedFiles = getChangedFiles(
+      challenge.files || {},
+      files
+    );
+
+    if (changedFiles.length === 0) {
+      setEvaluation(null);
+      setSubmitted(false);
+      setCloudStatus("");
+      setSaveError("");
+      setEvaluationError(
+        "You haven't modified the project yet. Fix the bugs before requesting an AI evaluation."
+      );
+      return;
+    }
 
     setEvaluating(true);
     setEvaluation(null);
     setEvaluationError("");
     setSubmitted(false);
     setSaveError("");
+    setCloudStatus("");
 
     try {
       const response = await fetch("/api/evaluate", {
@@ -203,6 +328,7 @@ export default function AssessmentWorkspace({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          assessmentId: assessment.id,
           title: assessment.title,
           description: challenge.description,
           instructions: challenge.instructions || [],
@@ -214,15 +340,28 @@ export default function AssessmentWorkspace({
 
       if (!response.ok) {
         throw new Error(
-          data.error || "Unable to evaluate your solution."
+          data.error ||
+            "Unable to evaluate your solution."
         );
       }
 
       if (!data.evaluation) {
-        throw new Error("No evaluation was returned.");
+        throw new Error(
+          "No evaluation was returned."
+        );
       }
 
       setEvaluation(data.evaluation);
+
+      if (Array.isArray(data.sourceChecks?.checks)) {
+        setResults(
+          data.sourceChecks.checks.map((check) => ({
+            name: check.name,
+            passed: check.passed,
+            hint: check.hint || "",
+          }))
+        );
+      }
     } catch (error) {
       setEvaluationError(
         error.message || "Evaluation failed."
@@ -232,9 +371,13 @@ export default function AssessmentWorkspace({
     }
   };
 
-  // Submit the Gemini-reviewed solution to My Progress.
-  const submitAssessment = () => {
-    if (!evaluation || submitted || evaluating) {
+  const submitAssessment = async () => {
+    if (
+      !evaluation ||
+      submitted ||
+      evaluating ||
+      saving
+    ) {
       return;
     }
 
@@ -265,30 +408,69 @@ export default function AssessmentWorkspace({
       ) / scores.length
     );
 
+    setSaving(true);
+    setSaveError("");
+    setCloudStatus("");
+
+    let savedResult;
+
     try {
-      saveAssessmentResult({
+      const savedResults = saveAssessmentResult({
         assessmentId: assessment.id,
         title: assessment.title,
+        language: challenge.language || null,
         score,
-        passed: 0,
-        total: 0,
+        passed:
+          results?.filter((item) => item.passed).length || 0,
+        total: results?.length || 0,
         completed: true,
         evaluationType: "ai-static-review",
         evaluation,
         submittedFiles: { ...files },
       });
 
+      savedResult = savedResults[assessment.id];
+
       setSubmitted(true);
-      setSaveError("");
       onResultSaved?.();
-    } catch {
-      setSaveError("Unable to save assessment results.");
+      setCloudStatus("Saving to Supabase...");
+    } catch (error) {
+      console.error(
+        "Local assessment saving failed:",
+        error
+      );
+
+      setSaveError(
+        "Unable to save the assessment locally."
+      );
+      setSaving(false);
+      return;
+    }
+
+    try {
+      await saveCloudAssessment(savedResult);
+
+      setCloudStatus(
+        "Assessment saved to Supabase successfully."
+      );
+    } catch (error) {
+      console.error(
+        "Assessment cloud save failed:",
+        error
+      );
+
+      setCloudStatus(
+        `Saved locally, but cloud sync failed: ${
+          error.message || "Unknown error"
+        }`
+      );
+    } finally {
+      setSaving(false);
     }
   };
 
-  // Open the Gemini interview using the latest project code.
   const startProjectInterview = () => {
-    if (!submitted) return;
+    if (!submitted || !challenge) return;
 
     onStartInterview?.({
       title: assessment.title,
@@ -306,35 +488,66 @@ export default function AssessmentWorkspace({
     });
   };
 
-  // Reset the editor to the originally generated files.
   const resetFiles = () => {
-    const restoredFiles = { ...challenge.files };
+    if (!challenge || saving || evaluating) return;
+
+    const restoredFiles = {
+      ...challenge.files,
+    };
+
+    let resetError = "";
 
     try {
-      localStorage.removeItem(storageKey);
-    } catch {
-      // Continue if browser storage is unavailable.
+      removeUserStorage(draftKey);
+    } catch (error) {
+      console.error(
+        "Unable to remove editor draft:",
+        error
+      );
+
+      resetError =
+        "Files were reset, but the saved draft could not be removed.";
     }
 
     setFiles(restoredFiles);
-    setActiveFile(challenge.startingFile);
+    setActiveFile(
+      challenge.startingFile ||
+        Object.keys(restoredFiles)[0] ||
+        ""
+    );
 
     shareCodeWithInterview(restoredFiles);
 
     setResults(null);
     setShowHint(false);
-    setSaveError("");
     setEvaluation(null);
     setEvaluationError("");
     setSubmitted(false);
+    setCloudStatus("");
+    setSaveError(resetError);
   };
 
   const unsolved =
     results?.filter((result) => !result.passed) || [];
 
+  if (!challenge) {
+    return (
+      <section className="rounded-xl bg-white p-6">
+        <p>This challenge is not available.</p>
+        <button
+          type="button"
+          onClick={onBack}
+          className="mt-4 text-indigo-600"
+        >
+          Back to assessments
+        </button>
+      </section>
+    );
+  }
+
   return (
     <div className="space-y-5">
-      {/* BACK BUTTON */}
+      {/* BACK */}
       <button
         type="button"
         onClick={onBack}
@@ -344,7 +557,7 @@ export default function AssessmentWorkspace({
         Back to assessments
       </button>
 
-      {/* HEADER */}
+      {/* TITLE */}
       <div>
         {isGenerated && (
           <div className="mb-3 flex items-center gap-2 text-sm font-medium text-indigo-600">
@@ -362,18 +575,20 @@ export default function AssessmentWorkspace({
         </p>
       </div>
 
-      {/* TASK INSTRUCTIONS */}
+      {/* INSTRUCTIONS */}
       <section className="rounded-xl border border-slate-200 bg-white p-5">
         <h3 className="font-semibold">Your task</h3>
 
         <ul className="mt-3 list-inside list-disc space-y-2 text-sm text-slate-600">
-          {(challenge.instructions || []).map((step, index) => (
-            <li key={index}>{step}</li>
-          ))}
+          {(challenge.instructions || []).map(
+            (step, index) => (
+              <li key={index}>{step}</li>
+            )
+          )}
         </ul>
       </section>
 
-      {/* FILE EXPLORER AND MONACO EDITOR */}
+      {/* FILE EXPLORER + MONACO */}
       <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
         <aside className="rounded-xl border border-slate-200 bg-white p-4">
           <h3 className="mb-4 text-xs font-bold uppercase text-slate-500">
@@ -391,13 +606,8 @@ export default function AssessmentWorkspace({
                   : "hover:bg-slate-100"
               }`}
             >
-              <FileCode2
-                size={16}
-                className="shrink-0"
-              />
-              <span className="break-all">
-                {filename}
-              </span>
+              <FileCode2 size={16} className="shrink-0" />
+              <span className="break-all">{filename}</span>
             </button>
           ))}
         </aside>
@@ -411,7 +621,8 @@ export default function AssessmentWorkspace({
             <button
               type="button"
               onClick={resetFiles}
-              className="flex shrink-0 items-center gap-2 text-xs text-slate-500"
+              disabled={saving || evaluating}
+              className="flex shrink-0 items-center gap-2 text-xs text-slate-500 disabled:opacity-50"
             >
               <RotateCcw size={14} />
               Reset
@@ -424,46 +635,23 @@ export default function AssessmentWorkspace({
             language={languageFor(activeFile)}
             theme="vs-dark"
             path={`${assessment.id}/${activeFile}`}
-            value={files[activeFile] || ""}
-            onChange={(value) => {
-              const updatedFiles = {
-                ...files,
-                [activeFile]: value ?? "",
-              };
-
-              setFiles(updatedFiles);
-
-              // Persist the current draft in the browser.
-              try {
-                localStorage.setItem(
-                  storageKey,
-                  JSON.stringify(updatedFiles)
-                );
-              } catch {
-                // Editing remains available.
-              }
-
-              // Synchronize project context for the AI interview.
-              shareCodeWithInterview(updatedFiles);
-
-              // Existing evaluation is no longer current.
-              setResults(null);
-              setEvaluation(null);
-              setEvaluationError("");
-              setSubmitted(false);
-            }}
+            value={files[activeFile] ?? ""}
+            onChange={(value) =>
+              updateFile(activeFile, value)
+            }
             options={{
               minimap: { enabled: false },
               fontSize: 14,
               automaticLayout: true,
               wordWrap: "on",
               scrollBeyondLastLine: false,
+              readOnly: saving || evaluating,
             }}
           />
         </div>
       </div>
 
-      {/* GEMINI DEBUGGING COACH */}
+      {/* AI COACH */}
       <DebuggingCoach
         key={assessment.id}
         assessmentId={assessment.id}
@@ -475,14 +663,15 @@ export default function AssessmentWorkspace({
         ].join("\n")}
       />
 
-      {/* ASSESSMENT ACTIONS */}
+      {/* ACTION BUTTONS */}
       <div className="flex flex-wrap items-center gap-3">
         {!isGenerated && (
           <>
             <button
               type="button"
               onClick={runChecks}
-              className="flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-3 text-sm font-semibold text-white"
+              disabled={saving || evaluating}
+              className="flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
             >
               <Play size={16} />
               Check Solution
@@ -504,7 +693,7 @@ export default function AssessmentWorkspace({
         <button
           type="button"
           onClick={evaluateSolution}
-          disabled={evaluating}
+          disabled={evaluating || saving}
           className="flex items-center gap-2 rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-60"
         >
           {evaluating ? (
@@ -524,7 +713,7 @@ export default function AssessmentWorkspace({
         </button>
       </div>
 
-      {/* ERROR */}
+      {/* ERRORS */}
       {evaluationError && (
         <p
           role="alert"
@@ -535,7 +724,7 @@ export default function AssessmentWorkspace({
         </p>
       )}
 
-      {/* AI CODE EVALUATION REPORT */}
+      {/* AI EVALUATION */}
       {evaluation && (
         <section className="rounded-2xl border border-violet-200 bg-white p-6 shadow-sm">
           <div className="flex items-center gap-3">
@@ -548,14 +737,12 @@ export default function AssessmentWorkspace({
               <h3 className="text-xl font-bold">
                 AI Code Evaluation Report
               </h3>
-
               <p className="text-xs text-slate-500">
                 Static analysis by Gemini AI
               </p>
             </div>
           </div>
 
-          {/* EVALUATION SCORES */}
           <div className="mt-6 grid gap-4 sm:grid-cols-3">
             {[
               ["Correctness", evaluation.correctness],
@@ -567,7 +754,7 @@ export default function AssessmentWorkspace({
                 className="rounded-xl bg-violet-50 p-5 text-center"
               >
                 <p className="text-3xl font-bold text-violet-700">
-                  {score}%
+                  {safeScore(score)}%
                 </p>
                 <p className="mt-2 text-xs font-medium text-slate-600">
                   {label}
@@ -576,7 +763,6 @@ export default function AssessmentWorkspace({
             ))}
           </div>
 
-          {/* OVERALL FEEDBACK */}
           <div className="mt-6">
             <h4 className="font-semibold text-slate-900">
               Overall Feedback
@@ -586,79 +772,63 @@ export default function AssessmentWorkspace({
             </p>
           </div>
 
-          {/* STRENGTHS */}
           <div className="mt-6">
             <h4 className="flex items-center gap-2 font-semibold text-green-700">
               <CheckCircle2 size={18} />
               Strengths
             </h4>
-
-            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-600">
-              {(evaluation.strengths || []).map(
-                (item, index) => (
-                  <li key={index}>{item}</li>
-                )
-              )}
-            </ul>
+            <FeedbackItems items={evaluation.strengths} />
           </div>
 
-          {/* ISSUES */}
           <div className="mt-6">
             <h4 className="flex items-center gap-2 font-semibold text-red-700">
               <XCircle size={18} />
               Issues Found
             </h4>
-
-            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-600">
-              {(evaluation.issues || []).map(
-                (item, index) => (
-                  <li key={index}>{item}</li>
-                )
-              )}
-            </ul>
+            <FeedbackItems items={evaluation.issues} />
           </div>
 
-          {/* IMPROVEMENTS */}
           <div className="mt-6">
             <h4 className="flex items-center gap-2 font-semibold text-indigo-700">
               <Lightbulb size={18} />
               Suggested Improvements
             </h4>
-
-            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-600">
-              {(evaluation.improvements || []).map(
-                (item, index) => (
-                  <li key={index}>{item}</li>
-                )
-              )}
-            </ul>
+            <FeedbackItems items={evaluation.improvements} />
           </div>
 
           <p className="mt-6 border-t border-slate-100 pt-4 text-xs text-slate-500">
-            These scores are AI estimates based on source code
-            review. No code compilation, runtime execution,
-            or automated tests were performed.
+            These scores are estimates based on static AI
+            review and source-pattern checks. No code
+            compilation or automated tests were performed.
           </p>
 
-          {/* SUBMISSION AND INTERVIEW BUTTONS */}
           <div className="mt-6 flex flex-wrap gap-3 border-t border-slate-100 pt-5">
             <button
               type="button"
               onClick={submitAssessment}
-              disabled={submitted || evaluating}
+              disabled={submitted || evaluating || saving}
               className="flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white disabled:bg-green-600"
             >
-              <CheckCircle2 size={18} />
-              {submitted
-                ? "Assessment Submitted"
-                : "Submit Assessment"}
+              {saving ? (
+                <Loader2
+                  size={18}
+                  className="animate-spin"
+                />
+              ) : (
+                <CheckCircle2 size={18} />
+              )}
+              {saving
+                ? "Saving..."
+                : submitted
+                  ? "Assessment Submitted"
+                  : "Submit Assessment"}
             </button>
 
             {submitted && (
               <button
                 type="button"
                 onClick={startProjectInterview}
-                disabled={!onStartInterview}
+                disabled={!onStartInterview || saving}
                 className="flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
               >
                 <Sparkles size={18} />
@@ -669,15 +839,37 @@ export default function AssessmentWorkspace({
 
           {submitted && (
             <p className="mt-4 text-sm text-green-700">
-              Your AI-reviewed assessment has been saved to
-              My Progress. You can now continue to your
-              project-based interview.
+              Your AI-reviewed assessment has been saved.
+              You can now continue to your project-based interview.
             </p>
           )}
         </section>
       )}
 
-      {/* PREDEFINED HINTS */}
+      {/* CLOUD STATUS */}
+      {cloudStatus && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`rounded-xl border p-4 text-sm ${
+            cloudStatus.includes("failed")
+              ? "border-amber-200 bg-amber-50 text-amber-800"
+              : cloudStatus.includes("successfully")
+                ? "border-green-200 bg-green-50 text-green-700"
+                : "border-indigo-200 bg-indigo-50 text-indigo-700"
+          }`}
+        >
+          {cloudStatus}
+        </div>
+      )}
+
+      {saveError && (
+        <p role="alert" className="text-sm text-red-600">
+          {saveError}
+        </p>
+      )}
+
+      {/* HINTS */}
       {!isGenerated && showHint && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
           <h3 className="font-semibold">
@@ -690,21 +882,13 @@ export default function AssessmentWorkspace({
                 ? unsolved
                 : challenge.checks || []
             ).map((test) => (
-              <li key={test.name}>
-                {test.hint}
-              </li>
+              <li key={test.name}>{test.hint}</li>
             ))}
           </ul>
         </div>
       )}
 
-      {saveError && (
-        <p role="alert" className="text-sm text-red-600">
-          {saveError}
-        </p>
-      )}
-
-      {/* PREDEFINED SOLUTION CHECKS */}
+      {/* SOLUTION CHECKS */}
       {!isGenerated && results && (
         <section className="rounded-xl border border-slate-200 bg-white p-5">
           <h3 className="mb-4 font-semibold">
@@ -733,7 +917,7 @@ export default function AssessmentWorkspace({
                   {result.name}
                 </p>
 
-                {!result.passed && (
+                {!result.passed && result.hint && (
                   <p className="mt-1 text-xs text-slate-500">
                     {result.hint}
                   </p>
@@ -744,14 +928,13 @@ export default function AssessmentWorkspace({
 
           <p className="mt-4 text-sm font-semibold">
             Passed:{" "}
-            {results.filter(
-              (result) => result.passed
-            ).length}
+            {results.filter((result) => result.passed).length}
             /{results.length}
           </p>
 
           <p className="mt-2 text-xs text-slate-500">
-            These are source-pattern checks, not executed tests.
+            These are static source-pattern checks,
+            not executed tests.
           </p>
         </section>
       )}

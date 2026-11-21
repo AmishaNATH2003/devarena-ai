@@ -1,11 +1,11 @@
 
 import { useEffect, useState } from "react";
+
 import {
   Code2,
   Mail,
   LockKeyhole,
   UserRound,
-  LogOut,
   Loader2,
   ArrowLeft,
   Eye,
@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 
 import { supabase } from "../lib/supabase";
+import { setStorageUserId } from "../utils/userStorage";
 
 export default function AuthGate({ children }) {
   const [session, setSession] = useState(null);
@@ -28,18 +29,35 @@ export default function AuthGate({ children }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
+  // Listen for Supabase authentication changes.
   useEffect(() => {
-    // INITIAL_SESSION restores an existing login.
-    // PASSWORD_RECOVERY handles password reset links.
     const { data } = supabase.auth.onAuthStateChange(
       (event, currentSession) => {
+        // Set the current browser-storage owner before
+        // rendering authenticated application components.
+        setStorageUserId(
+          currentSession?.user?.id ?? null
+        );
+
         setSession(currentSession);
 
+        // Handle password recovery links.
         if (event === "PASSWORD_RECOVERY") {
           setMode("update-password");
           setPassword("");
+          setError("");
         }
 
+        // Clear authentication form state on logout.
+        if (event === "SIGNED_OUT") {
+          setMode("login");
+          setPassword("");
+          setMessage("");
+          setError("");
+          setShowPassword(false);
+        }
+
+        // Initial session has been restored.
         if (event === "INITIAL_SESSION") {
           setInitializing(false);
         }
@@ -48,16 +66,23 @@ export default function AuthGate({ children }) {
 
     return () => {
       data.subscription.unsubscribe();
+
+      // Avoid retaining a previous storage owner
+      // when the authentication gate unmounts.
+      setStorageUserId(null);
     };
   }, []);
 
+  // Change between login, signup, and recovery screens.
   function changeMode(nextMode) {
     setMode(nextMode);
     setError("");
     setMessage("");
     setPassword("");
+    setShowPassword(false);
   }
 
+  // Handle authentication form submission.
   async function handleSubmit(event) {
     event.preventDefault();
 
@@ -68,6 +93,7 @@ export default function AuthGate({ children }) {
     setMessage("");
 
     try {
+      // SIGN UP
       if (mode === "signup") {
         if (name.trim().length < 2) {
           throw new Error(
@@ -93,7 +119,9 @@ export default function AuthGate({ children }) {
             },
           });
 
-        if (authError) throw authError;
+        if (authError) {
+          throw authError;
+        }
 
         setPassword("");
 
@@ -102,23 +130,29 @@ export default function AuthGate({ children }) {
             "Registration received. Please check your email and follow the verification link before logging in."
           );
         } else {
-          setMessage("Your account was created.");
+          setMessage(
+            "Your account was created successfully."
+          );
         }
       }
 
-      if (mode === "login") {
+      // LOGIN
+      else if (mode === "login") {
         const { error: authError } =
           await supabase.auth.signInWithPassword({
             email: email.trim(),
             password,
           });
 
-        if (authError) throw authError;
+        if (authError) {
+          throw authError;
+        }
 
         setPassword("");
       }
 
-      if (mode === "forgot") {
+      // FORGOT PASSWORD
+      else if (mode === "forgot") {
         const { error: authError } =
           await supabase.auth.resetPasswordForEmail(
             email.trim(),
@@ -127,14 +161,17 @@ export default function AuthGate({ children }) {
             }
           );
 
-        if (authError) throw authError;
+        if (authError) {
+          throw authError;
+        }
 
         setMessage(
           "If an account exists for this email address, you will receive password reset instructions."
         );
       }
 
-      if (mode === "update-password") {
+      // UPDATE PASSWORD
+      else if (mode === "update-password") {
         if (!session) {
           throw new Error(
             "Your password reset session has expired. Request another reset email."
@@ -152,47 +189,37 @@ export default function AuthGate({ children }) {
             password,
           });
 
-        if (authError) throw authError;
+        if (authError) {
+          throw authError;
+        }
 
         setPassword("");
         setMode("login");
+
         setMessage(
           "Password updated successfully. You are signed in."
         );
       }
     } catch (err) {
       setError(
-        err.message || "Something went wrong. Please try again."
+        err.message ||
+          "Something went wrong. Please try again."
       );
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleLogout() {
-    setLoading(true);
-    setError("");
-
-    const { error: authError } =
-      await supabase.auth.signOut();
-
-    if (authError) {
-      setError(authError.message);
-      setLoading(false);
-      return;
-    }
-
-    setSession(null);
-    setMode("login");
-    setPassword("");
-    setLoading(false);
-  }
-
+  // INITIAL LOADING SCREEN
   if (initializing) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50">
         <div className="flex items-center gap-3 text-indigo-600">
-          <Loader2 className="animate-spin" size={24} />
+          <Loader2
+            className="animate-spin"
+            size={24}
+          />
+
           <span className="font-medium">
             Loading DevArena AI...
           </span>
@@ -201,35 +228,16 @@ export default function AuthGate({ children }) {
     );
   }
 
-  // Allow password recovery even when a temporary
-  // authenticated session was created by the reset link.
+  // AUTHENTICATED DASHBOARD
+  // The profile dropdown handles Logout.
   if (session && mode !== "update-password") {
-    return (
-      <div>
-        <div className="fixed right-3 top-3 z-50 flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-md">
-          <span className="hidden max-w-48 truncate px-2 text-xs text-slate-600 sm:block">
-            {session.user.email}
-          </span>
-
-          <button
-            type="button"
-            onClick={handleLogout}
-            disabled={loading}
-            className="flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
-          >
-            <LogOut size={15} />
-            Logout
-          </button>
-        </div>
-
-        {children}
-      </div>
-    );
+    return <>{children}</>;
   }
 
   const isSignup = mode === "signup";
   const isForgot = mode === "forgot";
-  const isUpdatePassword = mode === "update-password";
+  const isUpdatePassword =
+    mode === "update-password";
 
   const heading = isSignup
     ? "Create your account"
@@ -250,6 +258,7 @@ export default function AuthGate({ children }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-10">
       <div className="w-full max-w-md">
+        {/* LOGO */}
         <div className="mb-8 flex items-center justify-center gap-3">
           <div className="rounded-2xl bg-indigo-600 p-3 text-white">
             <Code2 size={25} />
@@ -257,10 +266,13 @@ export default function AuthGate({ children }) {
 
           <span className="text-2xl font-extrabold tracking-tight text-slate-900">
             DevArena{" "}
-            <span className="text-indigo-600">AI</span>
+            <span className="text-indigo-600">
+              AI
+            </span>
           </span>
         </div>
 
+        {/* AUTHENTICATION CARD */}
         <div className="rounded-3xl border border-slate-200 bg-white p-7 shadow-sm sm:p-9">
           <h1 className="text-2xl font-bold text-slate-900">
             {heading}
@@ -270,6 +282,7 @@ export default function AuthGate({ children }) {
             {description}
           </p>
 
+          {/* ERROR MESSAGE */}
           {error && (
             <div
               role="alert"
@@ -279,6 +292,7 @@ export default function AuthGate({ children }) {
             </div>
           )}
 
+          {/* SUCCESS MESSAGE */}
           {message && (
             <div
               role="status"
@@ -288,10 +302,12 @@ export default function AuthGate({ children }) {
             </div>
           )}
 
+          {/* AUTHENTICATION FORM */}
           <form
             onSubmit={handleSubmit}
             className="mt-7 space-y-5"
           >
+            {/* FULL NAME */}
             {isSignup && (
               <div>
                 <label
@@ -324,6 +340,7 @@ export default function AuthGate({ children }) {
               </div>
             )}
 
+            {/* EMAIL ADDRESS */}
             {!isUpdatePassword && (
               <div>
                 <label
@@ -355,6 +372,7 @@ export default function AuthGate({ children }) {
               </div>
             )}
 
+            {/* PASSWORD */}
             {!isForgot && (
               <div>
                 <label
@@ -374,14 +392,22 @@ export default function AuthGate({ children }) {
 
                   <input
                     id="auth-password"
-                    type={showPassword ? "text" : "password"}
+                    type={
+                      showPassword
+                        ? "text"
+                        : "password"
+                    }
                     autoComplete={
                       isSignup || isUpdatePassword
                         ? "new-password"
                         : "current-password"
                     }
                     required
-                    minLength={isSignup || isUpdatePassword ? 8 : undefined}
+                    minLength={
+                      isSignup || isUpdatePassword
+                        ? 8
+                        : undefined
+                    }
                     value={password}
                     onChange={(event) =>
                       setPassword(event.target.value)
@@ -393,7 +419,9 @@ export default function AuthGate({ children }) {
                   <button
                     type="button"
                     onClick={() =>
-                      setShowPassword((previous) => !previous)
+                      setShowPassword(
+                        (previous) => !previous
+                      )
                     }
                     aria-label={
                       showPassword
@@ -412,16 +440,20 @@ export default function AuthGate({ children }) {
               </div>
             )}
 
+            {/* FORGOT PASSWORD */}
             {mode === "login" && (
               <button
                 type="button"
-                onClick={() => changeMode("forgot")}
+                onClick={() =>
+                  changeMode("forgot")
+                }
                 className="text-sm font-semibold text-indigo-600 hover:underline"
               >
                 Forgot password?
               </button>
             )}
 
+            {/* SUBMIT BUTTON */}
             <button
               type="submit"
               disabled={loading}
@@ -444,14 +476,18 @@ export default function AuthGate({ children }) {
             </button>
           </form>
 
+          {/* LOGIN / SIGN UP NAVIGATION */}
           {!isUpdatePassword && (
             <div className="mt-7 text-center text-sm text-slate-600">
               {mode === "login" ? (
                 <>
                   Don't have an account?{" "}
+
                   <button
                     type="button"
-                    onClick={() => changeMode("signup")}
+                    onClick={() =>
+                      changeMode("signup")
+                    }
                     className="font-semibold text-indigo-600 hover:underline"
                   >
                     Sign Up
@@ -460,9 +496,12 @@ export default function AuthGate({ children }) {
               ) : isSignup ? (
                 <>
                   Already have an account?{" "}
+
                   <button
                     type="button"
-                    onClick={() => changeMode("login")}
+                    onClick={() =>
+                      changeMode("login")
+                    }
                     className="font-semibold text-indigo-600 hover:underline"
                   >
                     Sign In
@@ -471,7 +510,9 @@ export default function AuthGate({ children }) {
               ) : (
                 <button
                   type="button"
-                  onClick={() => changeMode("login")}
+                  onClick={() =>
+                    changeMode("login")
+                  }
                   className="inline-flex items-center gap-2 font-semibold text-indigo-600"
                 >
                   <ArrowLeft size={16} />
@@ -482,6 +523,7 @@ export default function AuthGate({ children }) {
           )}
         </div>
 
+        {/* FOOTER */}
         <p className="mt-6 text-center text-xs leading-5 text-slate-500">
           Practice engineering assessments and interviews
           with AI-powered feedback.

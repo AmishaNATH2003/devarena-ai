@@ -1,53 +1,63 @@
 
-const INTERVIEW_STORAGE_KEY = "devarena-interview-progress";
+import {
+  readUserStorage,
+  writeUserStorage,
+} from "./userStorage";
 
-const INTERVIEW_HISTORY_KEY = "devarena-interview-history";
+const INTERVIEW_STORAGE_KEY = "interview-progress";
+const INTERVIEW_HISTORY_KEY = "interview-history";
 
-// Safely read data from localStorage.
-function readStorage(key, fallback) {
-  try {
-    const saved = localStorage.getItem(key);
-    return saved ? JSON.parse(saved) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-// Retrieve all completed interview attempts.
+/**
+ * Retrieve all interview attempts for the
+ * currently signed-in user.
+ */
 export function getInterviewHistory() {
-  const history = readStorage(INTERVIEW_HISTORY_KEY, []);
+  const history = readUserStorage(
+    INTERVIEW_HISTORY_KEY,
+    []
+  );
 
-  if (Array.isArray(history)) {
-    if (history.length > 0) {
-      return history;
-    }
-
-    // If the history is empty, import the old
-    // single-result format when available.
-    const legacy = getInterviewResult();
-
-    return legacy ? [legacy] : [];
+  if (Array.isArray(history) && history.length > 0) {
+    return history;
   }
 
-  return [];
+  // Backward compatibility with the scoped
+  // single-result format.
+  const latest = readUserStorage(
+    INTERVIEW_STORAGE_KEY,
+    null
+  );
+
+  return latest ? [latest] : [];
 }
 
-// Keep backward compatibility with ProgressDashboard.jsx.
+/**
+ * Retrieve the most recent interview result.
+ */
 export function getInterviewResult() {
-  const latest = readStorage(INTERVIEW_STORAGE_KEY, null);
+  const latest = readUserStorage(
+    INTERVIEW_STORAGE_KEY,
+    null
+  );
 
-  if (latest) {
-    return latest;
-  }
+  if (latest) return latest;
 
-  const history = readStorage(INTERVIEW_HISTORY_KEY, []);
+  const history = readUserStorage(
+    INTERVIEW_HISTORY_KEY,
+    []
+  );
 
   return Array.isArray(history) && history.length > 0
     ? history[0]
     : null;
 }
 
-// Save a completed interview as a new attempt.
+/**
+ * Save a completed interview attempt.
+ *
+ * The existing return format is preserved so
+ * cloudProgress.js can upload this record.
+ */
 export function saveInterviewResult(
   answers,
   assessment = null,
@@ -72,15 +82,14 @@ export function saveInterviewResult(
       : "assignment";
 
   const result = {
-    id:
-      typeof crypto !== "undefined" && crypto.randomUUID
-        ? crypto.randomUUID()
-        : `interview-${Date.now()}`,
+    id: crypto.randomUUID(),
 
-    assessmentId: assessment?.id || "ai-interview",
+    assessmentId:
+      assessment?.id || "ai-interview",
 
     assessmentTitle:
-      assessment?.title || "Software Engineering Interview",
+      assessment?.title ||
+      "Software Engineering Interview",
 
     mode,
 
@@ -105,7 +114,6 @@ export function saveInterviewResult(
     evaluationType: "ai-interview-review",
   };
 
-  // Existing history, including any legacy result.
   const history = getInterviewHistory();
 
   const updatedHistory = [
@@ -113,16 +121,15 @@ export function saveInterviewResult(
     ...history,
   ];
 
-  // Save full history.
-  localStorage.setItem(
+  // Save the history and latest result separately.
+  writeUserStorage(
     INTERVIEW_HISTORY_KEY,
-    JSON.stringify(updatedHistory)
+    updatedHistory
   );
 
-  // Also maintain the latest result for existing components.
-  localStorage.setItem(
+  writeUserStorage(
     INTERVIEW_STORAGE_KEY,
-    JSON.stringify(result)
+    result
   );
 
   return result;

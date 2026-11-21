@@ -1,5 +1,6 @@
 
 import { useEffect, useRef, useState } from "react";
+
 import {
   Mic,
   MicOff,
@@ -19,6 +20,7 @@ import {
 } from "lucide-react";
 
 import { saveInterviewResult } from "../utils/interviewStorage";
+import { saveCloudInterview } from "../lib/cloudProgress";
 import { getAssessmentSession } from "../utils/assessmentSession";
 import { getAssessmentResults } from "../utils/progressStorage";
 import { parseResume } from "../utils/resumeParser";
@@ -76,7 +78,7 @@ async function interviewRequest(payload) {
   return data;
 }
 
-// Load latest saved source code for an assignment.
+// Load the latest source code for a saved assignment.
 function contextForSavedAssessment(item) {
   if (!item) return null;
 
@@ -131,7 +133,7 @@ function contextForSavedAssessment(item) {
   };
 }
 
-// Find assignments available for an interview.
+// Retrieve assignments available for interview practice.
 function availableAssessments() {
   const saved = getAssessmentSession();
   const progress = getAssessmentResults();
@@ -165,8 +167,7 @@ function availableAssessments() {
 export default function InterviewPractice({
   assessment = null,
 }) {
-  // Assignment button opens assignment mode directly.
-  // Sidebar navigation opens the two-mode selector.
+  // Interview mode selection.
   const [mode, setMode] = useState(
     assessment ? "assignment" : null
   );
@@ -177,7 +178,7 @@ export default function InterviewPractice({
   const [savedAssignments] = useState(availableAssessments);
   const [chosenId, setChosenId] = useState("");
 
-  // Resume-specific state.
+  // Resume information.
   const [resumeText, setResumeText] = useState("");
   const [resumeFileName, setResumeFileName] = useState("");
   const [parsingResume, setParsingResume] = useState(false);
@@ -185,19 +186,23 @@ export default function InterviewPractice({
   const [selectedRole, setSelectedRole] = useState(
     "Software Engineer"
   );
+
   const [customRole, setCustomRole] = useState("");
+
   const [interviewType, setInterviewType] =
     useState("technical");
 
-  // Interview state.
+  // Interview session states.
   const [currentQuestion, setCurrentQuestion] =
     useState("");
+
   const [questionIndex, setQuestionIndex] = useState(0);
   const [answer, setAnswer] = useState("");
   const [listening, setListening] = useState(false);
 
   const [feedback, setFeedback] = useState(null);
   const [history, setHistory] = useState([]);
+
   const [nextQuestionText, setNextQuestionText] =
     useState(null);
 
@@ -223,7 +228,7 @@ export default function InterviewPractice({
     codeSummary: "",
   };
 
-  // Stop microphone and ignore pending requests on unmount.
+  // Stop microphone and invalidate requests on unmount.
   useEffect(() => {
     return () => {
       requestIdRef.current += 1;
@@ -306,7 +311,7 @@ export default function InterviewPractice({
     }
   };
 
-  // Pick a saved coding assignment.
+  // Select a saved assignment.
   const chooseSavedAssignment = (id) => {
     setChosenId(id);
 
@@ -329,7 +334,7 @@ export default function InterviewPractice({
     setNotice("");
   };
 
-  // Extract resume locally using resumeParser.js.
+  // Parse a PDF or DOCX resume.
   const handleResumeUpload = async (event) => {
     const file = event.target.files?.[0];
 
@@ -363,7 +368,7 @@ export default function InterviewPractice({
     }
   };
 
-  // Build the resume interview context for Gemini.
+  // Prepare Gemini context for a resume interview.
   const prepareResumeInterview = () => {
     if (
       resumeText.trim().length < 50 ||
@@ -389,7 +394,7 @@ export default function InterviewPractice({
     setError("");
   };
 
-  // Start assignment or resume interview.
+  // Start an assignment-based or resume-based interview.
   const startInterview = async () => {
     if (loading || parsingResume || !chosenContext) return;
 
@@ -407,6 +412,7 @@ export default function InterviewPractice({
     setFinished(false);
     setSaved(false);
     setNextQuestionText(null);
+    setNotice("");
 
     transcriptRef.current = "";
 
@@ -442,7 +448,7 @@ export default function InterviewPractice({
     }
   };
 
-  // Submit answer for Gemini evaluation.
+  // Submit the current answer to Gemini.
   const submitAnswer = async () => {
     if (
       loading ||
@@ -517,29 +523,64 @@ export default function InterviewPractice({
         setFinished(true);
         setNextQuestionText(null);
 
+        let savedInterview;
+
         try {
-          // Save interview metadata and answers only.
-          // Never save full resume text in progress storage.
-          saveInterviewResult(
+          // Save interview answers and feedback locally.
+          // Full resume text is not included.
+          savedInterview = saveInterviewResult(
             updatedHistory,
             {
               title: interviewContext.title,
               mode: interviewContext.mode || "assignment",
-              targetRole:
-                interviewContext.targetRole || "",
+              targetRole: interviewContext.targetRole || "",
               interviewType:
-                interviewContext.interviewType ||
-                "technical",
+                interviewContext.interviewType || "technical",
             },
             updatedHistory.length
           );
 
           setSaved(true);
-        } catch {
-          setSaved(false);
-          setError(
-            "Interview completed, but saving progress failed."
+
+          setNotice(
+            "Interview saved locally. Syncing to Supabase..."
           );
+        } catch (saveError) {
+          setSaved(false);
+
+          setError(
+            saveError.message ||
+              "Interview completed, but local saving failed."
+          );
+        }
+
+        // Cloud saving is separate from local saving.
+        if (savedInterview) {
+          try {
+            await saveCloudInterview(savedInterview);
+
+            if (requestId !== requestIdRef.current) {
+              return;
+            }
+
+            setNotice(
+              "Interview saved to Supabase successfully."
+            );
+          } catch (cloudError) {
+            console.error(
+              "Interview cloud sync failed:",
+              cloudError
+            );
+
+            if (requestId !== requestIdRef.current) {
+              return;
+            }
+
+            setNotice(
+              "Interview saved locally, but cloud sync failed: " +
+                (cloudError.message || "Unknown error")
+            );
+          }
         }
       } else {
         setNextQuestionText(data.nextQuestion);
@@ -557,7 +598,7 @@ export default function InterviewPractice({
     }
   };
 
-  // Continue to Gemini's adaptive follow-up question.
+  // Continue to the next interview question.
   const nextQuestion = () => {
     if (!nextQuestionText || loading) return;
 
@@ -573,7 +614,7 @@ export default function InterviewPractice({
     transcriptRef.current = "";
   };
 
-  // Restart without losing the selected interview mode.
+  // Restart interview while retaining the selected mode.
   const restart = () => {
     requestIdRef.current += 1;
     stopListening();
@@ -588,6 +629,7 @@ export default function InterviewPractice({
     setSaved(false);
     setLoading(false);
     setError("");
+    setNotice("");
 
     transcriptRef.current = "";
   };
@@ -603,7 +645,6 @@ export default function InterviewPractice({
 
   return (
     <div className="space-y-6">
-
       {/* PAGE HEADER */}
       <div>
         <p className="flex items-center gap-2 text-sm font-semibold text-indigo-600">
@@ -621,10 +662,9 @@ export default function InterviewPractice({
         </p>
       </div>
 
-      {/* MODE SELECTION */}
+      {/* INTERVIEW MODE SELECTION */}
       {!currentQuestion && !mode && (
         <div className="grid gap-5 md:grid-cols-2">
-
           <button
             type="button"
             onClick={() => {
@@ -681,10 +721,9 @@ export default function InterviewPractice({
         </div>
       )}
 
-      {/* ASSIGNMENT MODE */}
+      {/* ASSIGNMENT-BASED INTERVIEW */}
       {!currentQuestion && mode === "assignment" && (
         <section className="rounded-2xl border border-slate-200 bg-white p-6">
-
           <button
             type="button"
             onClick={returnToModes}
@@ -795,10 +834,9 @@ export default function InterviewPractice({
         </section>
       )}
 
-      {/* RESUME MODE */}
+      {/* RESUME-BASED INTERVIEW */}
       {!currentQuestion && mode === "resume" && (
         <section className="rounded-2xl border border-slate-200 bg-white p-6">
-
           <button
             type="button"
             onClick={returnToModes}
@@ -826,7 +864,6 @@ export default function InterviewPractice({
           </div>
 
           <div className="space-y-6">
-
             {/* UPLOAD RESUME */}
             <div>
               <label
@@ -945,9 +982,7 @@ export default function InterviewPractice({
                       type="radio"
                       name="interview-type"
                       value={option.value}
-                      checked={
-                        interviewType === option.value
-                      }
+                      checked={interviewType === option.value}
                       onChange={() => {
                         setInterviewType(option.value);
                         setChosenContext(null);
@@ -982,8 +1017,9 @@ export default function InterviewPractice({
                   for personalized questions. The uploaded
                   resume is not permanently saved by this
                   prototype. Interview answers and scores
-                  are saved locally for progress tracking.
-                  Avoid including unnecessary sensitive data.
+                  are saved locally and synced to Supabase
+                  when an interview is completed. Avoid including
+                  unnecessary sensitive data.
                 </p>
               </div>
             </div>
@@ -1055,7 +1091,6 @@ export default function InterviewPractice({
       {/* CURRENT INTERVIEW QUESTION */}
       {currentQuestion && (
         <section className="rounded-2xl border border-slate-200 bg-white p-6">
-
           <div className="flex items-center justify-between gap-3">
             <span className="text-sm font-semibold text-indigo-600">
               Question {questionIndex + 1} of {MAX_QUESTIONS}
@@ -1091,7 +1126,6 @@ export default function InterviewPractice({
           {/* MICROPHONE AND SUBMIT */}
           {!feedback && (
             <div className="mt-5 flex flex-wrap gap-3">
-
               <button
                 type="button"
                 onClick={
@@ -1146,7 +1180,6 @@ export default function InterviewPractice({
           {/* AI FEEDBACK */}
           {feedback && (
             <div className="mt-6 rounded-xl bg-indigo-50 p-5">
-
               <div className="flex items-center gap-2">
                 <CheckCircle2
                   size={20}
@@ -1243,13 +1276,22 @@ export default function InterviewPractice({
         </section>
       )}
 
-      {/* NOTICES AND ERRORS */}
+      {/* CLOUD SYNC NOTICES */}
       {notice && (
-        <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+        <p
+          role="status"
+          aria-live="polite"
+          className={`rounded-xl border p-4 text-sm ${
+            notice.includes("successfully")
+              ? "border-green-200 bg-green-50 text-green-700"
+              : "border-amber-200 bg-amber-50 text-amber-800"
+          }`}
+        >
           {notice}
         </p>
       )}
 
+      {/* ERROR MESSAGE */}
       {error && (
         <div
           role="alert"

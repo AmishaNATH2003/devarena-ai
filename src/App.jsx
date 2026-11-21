@@ -1,17 +1,24 @@
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import AssessmentWorkspace from "./components/AssessmentWorkspace";
 import ProgressDashboard from "./components/ProgressDashboard";
 import InterviewPractice from "./components/InterviewPractice";
 import GenerateAssessment from "./components/GenerateAssessment";
+import DeveloperProfile from "./components/DeveloperProfile";
+import ProfileHeader from "./components/ProfileHeader";
+import AccountSettings from "./components/AccountSettings";
 
 import { challenges } from "./data/challenges";
+import { getCloudAssessments } from "./lib/cloudProgress";
 import { getAssessmentResults } from "./utils/progressStorage";
+
 import {
   saveAssessmentSession,
   getAssessmentSession,
 } from "./utils/assessmentSession";
+
+import { readUserStorage } from "./utils/userStorage";
 
 import {
   LayoutDashboard,
@@ -25,9 +32,12 @@ import {
   Menu,
   X,
   Sparkles,
+  UserRound,
+  AlertCircle,
+  RefreshCw,
 } from "lucide-react";
 
-// Predefined assessments.
+// PREDEFINED ASSESSMENTS
 const assessments = [
   {
     id: 1,
@@ -58,16 +68,17 @@ const assessments = [
   },
 ];
 
-// Sidebar navigation.
+// SIDEBAR NAVIGATION
 const navigation = [
   { label: "Dashboard", icon: LayoutDashboard },
   { label: "Assessments", icon: Code2 },
   { label: "Interview Practice", icon: Mic },
   { label: "My Progress", icon: BarChart3 },
+  { label: "My Profile", icon: UserRound },
   { label: "Settings", icon: Settings },
 ];
 
-// Create interview context from the candidate's saved code.
+// CREATE INTERVIEW CONTEXT USING ACCOUNT-SPECIFIC DRAFTS
 function buildInterviewContext(assessment) {
   if (!assessment) return null;
 
@@ -75,44 +86,41 @@ function buildInterviewContext(assessment) {
     assessment.generatedChallenge ||
     challenges[assessment.id];
 
-  let files = { ...(challenge?.files || {}) };
+  if (!challenge) return null;
 
-  // Prefer the latest code saved by Monaco Editor.
-  try {
-    const savedDraft = localStorage.getItem(
-      `devarena-draft-${assessment.id}`
-    );
+  const originalFiles = {
+    ...(challenge.files || {}),
+  };
 
-    if (savedDraft) {
-      const parsed = JSON.parse(savedDraft);
+  const files = { ...originalFiles };
 
-      if (
-        parsed &&
-        typeof parsed === "object" &&
-        !Array.isArray(parsed)
-      ) {
-        const validEntries = Object.entries(parsed).filter(
-          ([filename, code]) =>
-            typeof filename === "string" &&
-            typeof code === "string"
-        );
+  // Never use the old shared localStorage draft.
+  const savedDraft = readUserStorage(
+    `draft:${assessment.id}`,
+    null
+  );
 
-        files = {
-          ...files,
-          ...Object.fromEntries(validEntries),
-        };
+  if (
+    savedDraft &&
+    typeof savedDraft === "object" &&
+    !Array.isArray(savedDraft)
+  ) {
+    for (const filename of Object.keys(originalFiles)) {
+      if (typeof savedDraft[filename] === "string") {
+        files[filename] = savedDraft[filename];
       }
     }
-  } catch {
-    // Use original files when browser storage is unavailable.
   }
 
   return {
     title: assessment.title,
     description: [
-      challenge?.description || assessment.description || "",
-      ...(challenge?.instructions || []),
+      challenge.description ||
+        assessment.description ||
+        "",
+      ...(challenge.instructions || []),
     ].join("\n"),
+
     codeSummary: Object.entries(files)
       .map(
         ([filename, code]) =>
@@ -124,32 +132,90 @@ function buildInterviewContext(assessment) {
 }
 
 export default function App() {
-  const [activePage, setActivePage] = useState("Dashboard");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activePage, setActivePage] =
+    useState("Dashboard");
 
-  // Restore previously opened assessment.
+  const [sidebarOpen, setSidebarOpen] =
+    useState(false);
+
+  // Restore this user's assessment session.
   const [selectedAssessment, setSelectedAssessment] =
     useState(() => getAssessmentSession());
 
-  // Restore interview context from the saved project.
   const [interviewAssessment, setInterviewAssessment] =
     useState(() =>
       buildInterviewContext(getAssessmentSession())
     );
 
-  // Saved assessment results.
-  const [progress, setProgress] = useState(
-    () => getAssessmentResults()
-  );
+  // Local progress remains useful for restoring
+  // submitted workspace state.
+  const [progress, setProgress] =
+    useState(() => getAssessmentResults());
 
-  // Keep a reference to the saved assessment.
+  // Dashboard statistics now come from Supabase.
+  const [cloudAssessments, setCloudAssessments] =
+    useState([]);
+
+  const [cloudStatus, setCloudStatus] =
+    useState("loading");
+
+  const [cloudError, setCloudError] =
+    useState("");
+
+  const [cloudRefreshCount, setCloudRefreshCount] =
+    useState(0);
+
+  // Fetch cloud assessment statistics whenever
+  // Dashboard opens or the refresh button is clicked.
+  useEffect(() => {
+    if (activePage !== "Dashboard") return;
+
+    let cancelled = false;
+
+    async function loadDashboardStats() {
+      try {
+        const rows = await getCloudAssessments();
+
+        if (cancelled) return;
+
+        setCloudAssessments(
+          Array.isArray(rows) ? rows : []
+        );
+        setCloudError("");
+        setCloudStatus("ready");
+      } catch (error) {
+        if (cancelled) return;
+
+        console.error(
+          "Unable to load Dashboard statistics:",
+          error
+        );
+
+        setCloudError(
+          error.message ||
+            "Could not load your cloud statistics."
+        );
+
+        setCloudStatus("error");
+      }
+    }
+
+    loadDashboardStats();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activePage, cloudRefreshCount]);
+
   const savedAssessment = getAssessmentSession();
 
-  const results = Object.values(progress);
-
-  const completedCount = results.filter(
-    (result) => result.completed
+  // Statistics are calculated exclusively from
+  // the signed-in user's cloud assessment rows.
+  const completedCount = cloudAssessments.filter(
+    (row) => row.status === "completed"
   ).length;
+
+  const attemptsCount = cloudAssessments.length;
 
   const savedAssessmentResult = savedAssessment
     ? progress[savedAssessment.id]
@@ -157,48 +223,62 @@ export default function App() {
 
   const hasSubmittedAssessment = Boolean(
     savedAssessmentResult?.completed &&
-    savedAssessmentResult?.evaluationType ===
-      "ai-static-review"
+      savedAssessmentResult?.evaluationType ===
+        "ai-static-review"
   );
 
-  // Refresh saved assessment data.
   const refreshProgress = () => {
     setProgress(getAssessmentResults());
   };
 
-  // Sidebar navigation.
+  const refreshCloudDashboard = () => {
+    setCloudStatus("loading");
+    setCloudError("");
+
+    setCloudRefreshCount(
+      (previous) => previous + 1
+    );
+  };
+
+  // SIDEBAR NAVIGATION
   const choosePage = (page) => {
-  refreshProgress();
-  setActivePage(page);
-  setSidebarOpen(false);
+    refreshProgress();
 
-  if (page === "Interview Practice") {
-    setInterviewAssessment(null);
-  }
-};
+    if (page === "Dashboard") {
+      refreshCloudDashboard();
+    }
 
-  // Open a predefined or AI-generated assessment.
+    setActivePage(page);
+    setSidebarOpen(false);
+
+    if (page === "Interview Practice") {
+      setInterviewAssessment(null);
+    }
+  };
+
+  // OPEN ASSESSMENT
   const openAssessment = (assessment) => {
+    if (!assessment?.id) return;
+
+    saveAssessmentSession(assessment);
+
     setSelectedAssessment(assessment);
     setActivePage("Assessments");
     setSidebarOpen(false);
 
-    saveAssessmentSession(assessment);
-
-    // Restore latest saved source code for interviewing.
     setInterviewAssessment(
       buildInterviewContext(assessment)
     );
   };
 
-  // Start an interview from the assessment workspace.
+  // START INTERVIEW FROM ASSESSMENT WORKSPACE
   const startProjectInterview = (context) => {
     setInterviewAssessment(context);
     setActivePage("Interview Practice");
     setSidebarOpen(false);
   };
 
-  // Start an interview from the Resume Assessment card.
+  // START INTERVIEW FROM SAVED ASSESSMENT
   const startSavedInterview = () => {
     const previous = getAssessmentSession();
 
@@ -212,22 +292,40 @@ export default function App() {
     setSidebarOpen(false);
   };
 
-  // Return to assessment list without deleting the draft.
+  // CLOSE WORKSPACE WITHOUT DELETING ITS DRAFT
   const closeAssessment = () => {
     refreshProgress();
+
     setSelectedAssessment(null);
     setActivePage("Assessments");
+    setSidebarOpen(false);
   };
+
+  // DASHBOARD DISPLAY VALUES
+  const completedDisplay =
+    cloudStatus === "loading"
+      ? "..."
+      : cloudStatus === "error"
+        ? "—"
+        : completedCount;
+
+  const attemptsDisplay =
+    cloudStatus === "loading"
+      ? "..."
+      : cloudStatus === "error"
+        ? "—"
+        : attemptsCount;
 
   return (
     <div className="min-h-screen bg-[#f7f8fc] text-slate-900">
       <div className="flex min-h-screen">
-
         {/* MOBILE SIDEBAR OVERLAY */}
         {sidebarOpen && (
-          <div
+          <button
+            type="button"
             className="fixed inset-0 z-20 bg-black/40 md:hidden"
             onClick={() => setSidebarOpen(false)}
+            aria-label="Close navigation overlay"
           />
         )}
 
@@ -274,6 +372,11 @@ export default function App() {
                 type="button"
                 key={label}
                 onClick={() => choosePage(label)}
+                aria-current={
+                  activePage === label
+                    ? "page"
+                    : undefined
+                }
                 className={`flex w-full items-center gap-3 rounded-xl
                   px-4 py-3 text-left text-sm font-medium transition
                   ${
@@ -300,14 +403,14 @@ export default function App() {
             </p>
 
             <p className="mt-1 text-xs leading-5 text-slate-600">
-              Solve real engineering tasks, not just isolated questions.
+              Solve real engineering tasks,
+              not just isolated questions.
             </p>
           </div>
         </aside>
 
         {/* MAIN CONTENT */}
         <main className="min-w-0 flex-1">
-
           {/* HEADER */}
           <header className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-5 md:px-10">
             <div className="flex items-center gap-3">
@@ -328,19 +431,18 @@ export default function App() {
               </h1>
             </div>
 
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-indigo-100 font-semibold text-indigo-700">
-              D
-            </div>
+            <ProfileHeader
+              key={activePage}
+              onNavigate={choosePage}
+            />
           </header>
 
           {/* PAGE CONTENT */}
           <div className="mx-auto max-w-6xl p-5 md:p-10">
-
-            {/* ASSESSMENT WORKSPACE */}
             {activePage === "Assessments" &&
             selectedAssessment ? (
               <AssessmentWorkspace
-                key={selectedAssessment.id}
+                key={String(selectedAssessment.id)}
                 assessment={selectedAssessment}
                 onBack={closeAssessment}
                 onResultSaved={refreshProgress}
@@ -357,7 +459,8 @@ export default function App() {
                   </p>
 
                   <h2 className="mt-4 max-w-2xl text-3xl font-bold md:text-4xl">
-                    Learn to solve problems like a real software engineer.
+                    Learn to solve problems like a real
+                    software engineer.
                   </h2>
 
                   <p className="mt-4 max-w-xl text-sm leading-6 text-slate-300">
@@ -378,43 +481,92 @@ export default function App() {
 
                 {/* DASHBOARD STATISTICS */}
                 {activePage === "Dashboard" && (
-                  <div className="mt-7 grid gap-4 sm:grid-cols-3">
-                    {[
-                      [
-                        "Available Challenges",
-                        assessments.length,
-                        Code2,
-                      ],
-                      [
-                        "Completed",
-                        completedCount,
-                        CheckCircle2,
-                      ],
-                      [
-                        "Attempts Recorded",
-                        results.length,
-                        Clock3,
-                      ],
-                    ].map(([label, value, Icon]) => (
-                      <div
-                        key={label}
-                        className="rounded-2xl border border-slate-200 bg-white p-6"
-                      >
-                        <Icon
-                          className="text-indigo-600"
-                          size={22}
-                        />
+                  <>
+                    <div className="mt-7 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h3 className="font-semibold text-slate-900">
+                          Your Practice Overview
+                        </h3>
 
-                        <p className="mt-4 text-2xl font-bold">
-                          {value}
-                        </p>
-
-                        <p className="mt-1 text-sm text-slate-500">
-                          {label}
+                        <p className="mt-1 text-xs text-slate-500">
+                          Assessment statistics from Supabase
                         </p>
                       </div>
-                    ))}
-                  </div>
+
+                      <button
+                        type="button"
+                        onClick={refreshCloudDashboard}
+                        disabled={cloudStatus === "loading"}
+                        className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        <RefreshCw
+                          size={15}
+                          className={
+                            cloudStatus === "loading"
+                              ? "animate-spin"
+                              : ""
+                          }
+                        />
+                        Refresh
+                      </button>
+                    </div>
+
+                    {cloudError && (
+                      <div
+                        role="alert"
+                        className="mt-4 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+                      >
+                        <AlertCircle
+                          size={18}
+                          className="shrink-0"
+                        />
+
+                        <span>
+                          Could not load cloud statistics:
+                          {" "}
+                          {cloudError}
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="mt-5 grid gap-4 sm:grid-cols-3">
+                      {[
+                        [
+                          "Available Challenges",
+                          assessments.length,
+                          Code2,
+                        ],
+                        [
+                          "Completed",
+                          completedDisplay,
+                          CheckCircle2,
+                        ],
+                        [
+                          "Attempts Recorded",
+                          attemptsDisplay,
+                          Clock3,
+                        ],
+                      ].map(([label, value, Icon]) => (
+                        <div
+                          key={label}
+                          className="rounded-2xl border border-slate-200 bg-white p-6"
+                        >
+                          <Icon
+                            className="text-indigo-600"
+                            size={22}
+                          />
+
+                          <p className="mt-4 text-2xl font-bold">
+                            {value}
+                          </p>
+
+                          <p className="mt-1 text-sm text-slate-500">
+                            {label}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </>
                 )}
 
                 {/* RESUME PREVIOUS ASSESSMENT */}
@@ -523,13 +675,19 @@ export default function App() {
                   ))}
                 </div>
               </>
+            ) : activePage === "My Profile" ? (
+              <DeveloperProfile />
             ) : activePage === "My Progress" ? (
               <ProgressDashboard />
             ) : activePage === "Interview Practice" ? (
               <InterviewPractice
-                key={interviewAssessment?.title || "general"}
+                key={
+                  interviewAssessment?.title || "general"
+                }
                 assessment={interviewAssessment}
               />
+            ) : activePage === "Settings" ? (
+              <AccountSettings />
             ) : (
               <section className="rounded-2xl border border-slate-200 bg-white p-8">
                 <h2 className="text-2xl font-bold">
@@ -537,8 +695,7 @@ export default function App() {
                 </h2>
 
                 <p className="mt-3 text-slate-600">
-                  This section will be implemented in an
-                  upcoming development stage.
+                  This section is currently unavailable.
                 </p>
               </section>
             )}
