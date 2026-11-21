@@ -1,7 +1,17 @@
 
 import process from "node:process";
 
-const ALLOWED_TECHNOLOGIES = ["java", "sql", "react"];
+import {
+  validateGeneratedAssessment,
+  ASSESSMENT_LIMITS,
+} from "../src/utils/assessmentValidation.js";
+
+const ALLOWED_TECHNOLOGIES = [
+  "java",
+  "sql",
+  "react",
+];
+
 const ALLOWED_DIFFICULTIES = [
   "beginner",
   "intermediate",
@@ -10,36 +20,63 @@ const ALLOWED_DIFFICULTIES = [
 
 const MODEL = "gemini-3.5-flash-lite";
 const MAX_ATTEMPTS = 3;
+
 const RETRYABLE_STATUSES = new Set([
-  429, 500, 502, 503, 504,
+  429,
+  500,
+  502,
+  503,
+  504,
 ]);
 
-const sleep = (ms) =>
-  new Promise((resolve) => setTimeout(resolve, ms));
-
-function validAssessment(data) {
-  return (
-    data &&
-    typeof data.title === "string" &&
-    typeof data.description === "string" &&
-    Array.isArray(data.instructions) &&
-    data.files &&
-    typeof data.files === "object" &&
-    !Array.isArray(data.files) &&
-    Object.keys(data.files).length >= 2 &&
-    Object.values(data.files).every(
-      (value) => typeof value === "string"
-    ) &&
-    typeof data.startingFile === "string" &&
-    Object.prototype.hasOwnProperty.call(
-      data.files,
-      data.startingFile
-    )
+const sleep = (milliseconds) =>
+  new Promise((resolve) =>
+    setTimeout(resolve, milliseconds)
   );
+
+function isValidGeneratedProject(project) {
+  const errors = validateGeneratedAssessment(project);
+
+  if (errors.length > 0) {
+    return {
+      valid: false,
+      errors,
+    };
+  }
+
+  const fileCount = Object.keys(project.files).length;
+
+  if (fileCount < 2 || fileCount > 3) {
+    return {
+      valid: false,
+      errors: ["files: expected 2 or 3"],
+    };
+  }
+
+  if (
+    !ALLOWED_TECHNOLOGIES.includes(
+      project.technology
+    ) ||
+    !ALLOWED_DIFFICULTIES.includes(
+      project.difficulty
+    )
+  ) {
+    return {
+      valid: false,
+      errors: ["technology or difficulty"],
+    };
+  }
+
+  return {
+    valid: true,
+    errors: [],
+  };
 }
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+
     return res.status(405).json({
       error: "Only POST requests are supported.",
     });
@@ -70,43 +107,64 @@ You are an expert software engineering assessment designer.
 Create ONE original ${difficulty} debugging assessment
 in ${technology} for a software engineer.
 
-Requirements:
-- A realistic broken project with 2 or 3 files.
-- Include 1 to 3 deliberate bugs.
-- Keep each file concise.
-- Show realistic source code.
-- Provide clear instructions and acceptance criteria.
-- State expected behavior without giving away the fix.
-- All file values must be source-code strings.
-- Return valid JSON only.
-- Do not use Markdown code fences.
+The project must contain:
+- Exactly 2 or 3 source files.
+- Between 1 and 3 deliberate functional bugs.
+- Realistic source code suitable for debugging.
+- Clear instructions and acceptance criteria.
+- Expected behavior without revealing solutions.
 
-Return exactly this JSON structure:
+STRICT OUTPUT LIMITS:
+- Title: 1-${ASSESSMENT_LIMITS.maxTitleLength} characters.
+- Description: maximum ${ASSESSMENT_LIMITS.maxDescriptionLength} characters.
+- Maximum ${ASSESSMENT_LIMITS.maxInstructions} instructions.
+- Each instruction: maximum ${ASSESSMENT_LIMITS.maxInstructionLength} characters.
+- Each filename: maximum ${ASSESSMENT_LIMITS.maxFilenameLength} characters.
+- Each file: maximum ${ASSESSMENT_LIMITS.maxFileLength} characters.
+- File contents must be source-code strings.
+- Keep files compact and realistic.
+- startingFile must exactly match an existing filename.
+
+Return only valid JSON.
+Do not include Markdown code fences.
+
+Return this JSON structure:
+
 {
   "title": "string",
   "description": "string",
   "technology": "${technology}",
   "difficulty": "${difficulty}",
   "startingFile": "filename",
-  "instructions": ["string", "string"],
+  "instructions": [
+    "Requirement one",
+    "Requirement two"
+  ],
   "files": {
-    "filename": "source code"
+    "filename1": "source code",
+    "filename2": "source code"
   }
 }
 `;
 
   const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/` +
-    `${MODEL}:generateContent`;
+    "https://generativelanguage.googleapis.com/" +
+    `v1beta/models/${MODEL}:generateContent`;
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  for (
+    let attempt = 1;
+    attempt <= MAX_ATTEMPTS;
+    attempt++
+  ) {
     try {
       const response = await fetch(url, {
         method: "POST",
+
         headers: {
           "Content-Type": "application/json",
           "x-goog-api-key": apiKey,
         },
+
         body: JSON.stringify({
           contents: [
             {
@@ -114,22 +172,23 @@ Return exactly this JSON structure:
               parts: [{ text: prompt }],
             },
           ],
+
           generationConfig: {
             responseMimeType: "application/json",
             maxOutputTokens: 8192,
           },
         }),
-        signal: AbortSignal.timeout(20000),
+
+        signal: AbortSignal.timeout(30000),
       });
 
       if (!response.ok) {
         const details = await response.text();
 
-        // Server-side debugging only.
         console.error("Gemini generation failed", {
           attempt,
           status: response.status,
-          details: details.slice(0, 1000),
+          details: details.slice(0, 500),
         });
 
         if (
@@ -150,7 +209,7 @@ Return exactly this JSON structure:
         if (response.status === 503) {
           return res.status(503).json({
             error:
-              "Gemini is temporarily unavailable. Please retry.",
+              "Gemini is temporarily unavailable.",
           });
         }
 
@@ -167,7 +226,7 @@ Return exactly this JSON structure:
         .join("");
 
       if (!raw) {
-        console.error("Gemini returned empty content", {
+        console.error("Empty Gemini response", {
           attempt,
           finishReason:
             data.candidates?.[0]?.finishReason,
@@ -189,10 +248,9 @@ Return exactly this JSON structure:
       try {
         generated = JSON.parse(raw);
       } catch {
-        console.error(
-          "Gemini returned invalid JSON",
-          { attempt }
-        );
+        console.error("Invalid generated JSON", {
+          attempt,
+        });
 
         if (attempt < MAX_ATTEMPTS) {
           await sleep(800 * attempt);
@@ -205,11 +263,18 @@ Return exactly this JSON structure:
         });
       }
 
-      if (!validAssessment(generated)) {
-        console.error(
-          "Assessment validation failed",
-          { attempt }
-        );
+      const validation =
+        isValidGeneratedProject(generated);
+
+      if (
+        !validation.valid ||
+        generated.technology !== technology ||
+        generated.difficulty !== difficulty
+      ) {
+        console.error("Generated assessment rejected", {
+          attempt,
+          errors: validation.errors,
+        });
 
         if (attempt < MAX_ATTEMPTS) {
           await sleep(800 * attempt);
@@ -218,7 +283,7 @@ Return exactly this JSON structure:
 
         return res.status(502).json({
           error:
-            "Gemini returned an invalid assessment format.",
+            "The generated assessment did not meet the required format or size limits. Try generating another.",
         });
       }
 
@@ -227,7 +292,7 @@ Return exactly this JSON structure:
       });
     } catch (error) {
       console.error(
-        "AI assessment request error",
+        "Assessment generation request error",
         {
           attempt,
           message: error.message,
@@ -241,7 +306,7 @@ Return exactly this JSON structure:
 
       return res.status(502).json({
         error:
-          "Assessment generation request failed. Check server logs.",
+          "Assessment generation request failed.",
       });
     }
   }
