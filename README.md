@@ -119,20 +119,6 @@ cd devarena-ai
 npm install
 ```
 
-### Environment Variables
-
-Create a `.env.local` file for local development:
-
-```env
-VITE_SUPABASE_URL=your_supabase_project_url
-VITE_SUPABASE_PUBLISHABLE_KEY=your_supabase_publishable_key
-GEMINI_API_KEY=your_gemini_api_key
-```
-
-The Gemini API key must remain on the server and must not be exposed as a `VITE_` environment variable.
-
-Never commit `.env.local` or secret API keys to GitHub.
-
 ### Run the Application
 
 For frontend development:
