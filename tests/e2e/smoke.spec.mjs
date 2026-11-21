@@ -23,10 +23,21 @@ async function login(page, email = "tester@example.com") {
 }
 
 async function navigate(page, name) {
-  const nav = page.getByRole("navigation").getByRole("button", { name, exact: true });
-  if (!(await nav.isVisible())) {
-    await page.getByRole("button", { name: "Open navigation" }).click();
+  const mobileMenuButton = page.getByRole("button", {
+    name: "Open navigation",
+  });
+
+  // Mobile sidebar is translated offscreen; Playwright's isVisible()
+  // can still report its child buttons as visible.
+  if (await mobileMenuButton.isVisible()) {
+    await mobileMenuButton.click();
   }
+
+  const nav = page.getByRole("navigation").getByRole("button", {
+    name,
+    exact: true,
+  });
+
   await nav.click();
 }
 
